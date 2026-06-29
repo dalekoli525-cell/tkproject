@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -15,7 +16,9 @@ class LocalCollectionStore:
 
     def __init__(self, root_dir: Path):
         self.root_dir = root_dir
-        self.data_dir = root_dir / "runtime" / "collector_data"
+        custom_data_dir = os.getenv("TK_AI_CRM_COLLECTOR_DATA_DIR", "").strip()
+        self.owner_username = os.getenv("TK_AI_CRM_OWNER_USERNAME", "").strip()
+        self.data_dir = Path(custom_data_dir) if custom_data_dir else root_dir / "runtime" / "collector_data"
         self.collected_path = self.data_dir / "collected_users.jsonl"
         self.video_path = self.data_dir / "videos.jsonl"
         self.task_log_path = self.data_dir / "task_logs.jsonl"
@@ -28,6 +31,8 @@ class LocalCollectionStore:
     def _append_jsonl(self, path: Path, payload: dict) -> None:
         payload = dict(payload)
         payload.setdefault("created_at", self._now_iso())
+        if self.owner_username:
+            payload.setdefault("owner_username", self.owner_username)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 

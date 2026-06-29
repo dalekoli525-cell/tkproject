@@ -44,29 +44,42 @@ def _save_payload(payload: dict) -> None:
 
 
 @router.get("")
-def list_tasks():
-    return _load_payload().get("tasks", [])
+def list_tasks(user: dict = Depends(require_current_user)):
+    rows = _load_payload().get("tasks", [])
+    if str(user.get("role", "")).lower() == "admin":
+        return rows
+    username = str(user.get("username", ""))
+    return [
+        task
+        for task in rows
+        if isinstance(task, dict) and str(task.get("owner_username", "")) == username
+    ]
 
 
 @router.get("/{task_code}")
-def get_task(task_code: str):
-    for task in list_tasks():
+def get_task(task_code: str, user: dict = Depends(require_current_user)):
+    for task in list_tasks(user):
         if isinstance(task, dict) and task.get("task_code") == task_code:
             return task
     raise HTTPException(status_code=404, detail="task not found")
 
 
 @router.post("")
-def create_task(task: dict):
+def create_task(task: dict, user: dict = Depends(require_current_user)):
     task_code = str(task.get("task_code", "")).strip()
     if not task_code:
         raise HTTPException(status_code=400, detail="task_code is required")
 
+    task["owner_username"] = str(user.get("username", ""))
     payload = _load_payload()
     tasks = [
         item
         for item in payload.get("tasks", [])
-        if not isinstance(item, dict) or item.get("task_code") != task_code
+        if not (
+            isinstance(item, dict)
+            and item.get("task_code") == task_code
+            and str(item.get("owner_username", "")) == task["owner_username"]
+        )
     ]
     tasks.append(task)
     payload["tasks"] = tasks

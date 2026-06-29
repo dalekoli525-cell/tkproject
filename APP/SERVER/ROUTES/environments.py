@@ -1,9 +1,11 @@
 """Temporary environment API backed by the local client state JSON file."""
 
+from __future__ import annotations
+
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
-
+from fastapi import Query
 import json
 from pathlib import Path
 
@@ -51,6 +53,7 @@ def _to_schema(environment: dict) -> BrowserEnvironment:
     return BrowserEnvironment(
         code=str(environment.get("code", "")),
         name=str(environment.get("name", "")),
+        owner_username=str(environment.get("owner_username", "")),
         proxy_node=str(environment.get("proxy", environment.get("proxy_node", ""))),
         local_proxy_port=int(environment.get("port", environment.get("local_proxy_port", 7901))),
         profile_dir=Path(environment.get("profile_dir", ROOT_DIR / "runtime" / "profiles")),
@@ -58,7 +61,7 @@ def _to_schema(environment: dict) -> BrowserEnvironment:
         tiktok_password=str(environment.get("tiktok_password", "")),
         status=str(environment.get("status", "NEW")),
         task_mode=str(environment.get("task_mode", "recommend")),
-        tag_class=str(environment.get("tag_class", "A类")),
+        tag_class=str(environment.get("tag_class", "A")),
     )
 
 
@@ -67,6 +70,7 @@ def _to_public_schema(environment: dict) -> BrowserEnvironmentPublic:
     return BrowserEnvironmentPublic(
         code=schema.code,
         name=schema.name,
+        owner_username=schema.owner_username,
         proxy_node=schema.proxy_node,
         local_proxy_port=schema.local_proxy_port,
         profile_dir=schema.profile_dir,
@@ -77,11 +81,12 @@ def _to_public_schema(environment: dict) -> BrowserEnvironmentPublic:
     )
 
 
-def _from_schema(environment: BrowserEnvironment) -> dict:
+def _from_schema(environment: BrowserEnvironment, owner_username: str) -> dict:
     account = environment.tiktok_username.strip() or "-"
     return {
         "code": environment.code.zfill(3) if environment.code.isdigit() else environment.code,
         "name": environment.name,
+        "owner_username": owner_username,
         "port": environment.local_proxy_port,
         "proxy": environment.proxy_node,
         "account": account,
@@ -94,14 +99,38 @@ def _from_schema(environment: BrowserEnvironment) -> dict:
     }
 
 
+def _is_admin(user: dict) -> bool:
+    return str(user.get("role", "")).lower() == "admin"
+
+
+def _environment_visible_to(environment: dict, user: dict) -> bool:
+    if _is_admin(user):
+        return True
+    return str(environment.get("owner_username", "")) == str(user.get("username", ""))
+
+
+def _collect_candidates(payload: dict, normalized_code: str, user: dict) -> list[tuple[int, dict]]:
+    return [
+        (index, item)
+        for index, item in enumerate(payload.get("environments", []))
+        if isinstance(item, dict)
+        and str(item.get("code", "")).zfill(3) == normalized_code
+        and _environment_visible_to(item, user)
+    ]
+
+
 @router.post("", response_model=BrowserEnvironmentPublic)
-def create_environment(environment: BrowserEnvironment):
+def create_environment(environment: BrowserEnvironment, user: dict = Depends(require_current_user)):
     payload = _load_payload()
-    row = _from_schema(environment)
+    owner_username = str(user.get("username", ""))
+    row = _from_schema(environment, owner_username=owner_username)
     rows = [
         item
         for item in payload.get("environments", [])
-        if str(item.get("code", "")).zfill(3) != row["code"]
+        if not (
+            str(item.get("code", "")).zfill(3) == row["code"]
+            and str(item.get("owner_username", "")) == owner_username
+        )
     ]
     rows.append(row)
     payload["environments"] = rows
@@ -110,35 +139,93 @@ def create_environment(environment: BrowserEnvironment):
 
 
 @router.get("", response_model=list[BrowserEnvironmentPublic])
-def list_environments():
+def list_environments(user: dict = Depends(require_current_user)):
     payload = _load_payload()
     return [
         _to_public_schema(environment)
         for environment in payload.get("environments", [])
-        if isinstance(environment, dict)
+        if isinstance(environment, dict) and _environment_visible_to(environment, user)
     ]
 
 
 @router.get("/{code}", response_model=BrowserEnvironmentPublic)
-def get_environment(code: str):
+def get_environment(
+    code: str,
+    owner_username: str = Query(default="", description="Admin-only hint when same code exists in multiple owners."),
+    user: dict = Depends(require_current_user),
+):
     normalized_code = code.zfill(3) if code.isdigit() else code
-    for environment in list_environments():
-        if environment.code == normalized_code:
-            return environment
-    raise HTTPException(status_code=404, detail="environment not found")
+    if owner_username and not _is_admin(user):
+        owner_username = str(user.get("username", ""))
+
+    candidates = _collect_candidates(_load_payload(), normalized_code, user)
+    if owner_username:
+        owner_username = str(owner_username).strip()
+        candidates = [
+            entry for entry in candidates if str(entry[1].get("owner_username", "")) == owner_username
+        ]
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=f"environment {normalized_code} not found for owner {owner_username}",
+            )
+        return _to_public_schema(candidates[0][1])
+
+    if not candidates:
+        raise HTTPException(status_code=404, detail="environment not found")
+    if _is_admin(user) and len(candidates) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"multiple environments match code {normalized_code};"
+                " pass owner_username to identify target"
+            ),
+        )
+    return _to_public_schema(candidates[0][1])
 
 
 @router.delete("/{code}")
-def delete_environment(code: str):
+def delete_environment(
+    code: str,
+    owner_username: str = Query(default="", description="Admin-only hint when same code exists in multiple owners."),
+    user: dict = Depends(require_current_user),
+):
     normalized_code = code.zfill(3) if code.isdigit() else code
+    if owner_username and not _is_admin(user):
+        owner_username = str(user.get("username", ""))
+
     payload = _load_payload()
-    before = len(payload.get("environments", []))
+    candidates = _collect_candidates(payload, normalized_code, user)
+
+    if owner_username:
+        owner_username = str(owner_username).strip()
+        candidates = [
+            entry for entry in candidates if str(entry[1].get("owner_username", "")) == owner_username
+        ]
+        if not candidates:
+            if _is_admin(user):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"environment {normalized_code} not found for owner {owner_username}",
+                )
+            raise HTTPException(status_code=404, detail="environment not found")
+    elif _is_admin(user) and len(candidates) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"multiple environments match code {normalized_code};"
+                " pass owner_username to identify target"
+            ),
+        )
+
+    if not candidates:
+        raise HTTPException(status_code=404, detail="environment not found")
+
+    remove_indexes = {index for index, _ in candidates}
     payload["environments"] = [
         item
-        for item in payload.get("environments", [])
-        if str(item.get("code", "")).zfill(3) != normalized_code
+        for index, item in enumerate(payload.get("environments", []))
+        if index not in remove_indexes
     ]
-    if len(payload["environments"]) == before:
-        raise HTTPException(status_code=404, detail="environment not found")
     _save_payload(payload)
     return {"deleted": normalized_code}

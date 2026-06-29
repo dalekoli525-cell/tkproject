@@ -11,9 +11,11 @@ from APP.SERVER.ROUTES import environments
 from APP.SERVER.ROUTES import health
 from APP.SERVER.ROUTES import tasks
 from APP.SHARED.settings import settings
+from APP.SERVER.security import ensure_default_users
 
 
 def create_app() -> FastAPI:
+    ensure_default_users()
     api = FastAPI(
         title=settings.app_name,
         version="0.1.0",

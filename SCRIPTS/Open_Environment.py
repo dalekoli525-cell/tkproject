@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 """Open one Playwright browser environment and keep it alive."""
 
@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -26,9 +27,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from APP.SHARED.settings import settings
-from APP.CLIENT.Clash_Api_Client import ClashApiClient
-
 BROWSER_LOG_DIR = ROOT_DIR / "runtime" / "browser_logs"
 ENV_STATE_FILE = ROOT_DIR / "runtime" / "client_state" / "environments.json"
 ENV_LOCK_DIR = ROOT_DIR / "runtime" / "environment_locks"
@@ -36,6 +34,7 @@ ENV_COMMAND_DIR = ROOT_DIR / "runtime" / "environment_commands"
 PROJECT_CLASH_PROXY_FILE = ROOT_DIR / "runtime" / "client_state" / "clash_proxy_nodes.private.yaml"
 CLASH_FALLBACK_PORTS = (7897, 7890, 7891, 7892, 7893, 7894, 7895, 7896, 7898, 7899)
 PLAYWRIGHT_PROXY_TYPES = {"http", "https", "socks", "socks4", "socks5"}
+PROFILE_META_FILENAME = "tk_ai_crm_profile.json"
 
 
 @dataclass(frozen=True)
@@ -57,6 +56,11 @@ def parse_args():
     parser.add_argument("--profile-dir", required=True)
     parser.add_argument("--url", default="https://www.tiktok.com")
     parser.add_argument("--render-wait", default=5, type=int)
+    parser.add_argument("--env-state-file", default=str(ENV_STATE_FILE))
+    parser.add_argument("--env-lock-dir", default=str(ENV_LOCK_DIR))
+    parser.add_argument("--env-command-dir", default=str(ENV_COMMAND_DIR))
+    parser.add_argument("--collector-data-dir", default="")
+    parser.add_argument("--owner-username", default="")
     return parser.parse_args()
 
 
@@ -85,6 +89,7 @@ def is_pid_running(pid: int) -> bool:
 
 
 def acquire_environment_lock(code: str) -> tuple[bool, int | None]:
+    code = _normalize_environment_code(code)
     ENV_LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = ENV_LOCK_DIR / f"env_{code}.lock"
 
@@ -108,6 +113,7 @@ def acquire_environment_lock(code: str) -> tuple[bool, int | None]:
 
 
 def release_environment_lock(code: str, owner_pid: int | None) -> None:
+    code = _normalize_environment_code(code)
     if owner_pid != os.getpid():
         return
 
@@ -143,6 +149,28 @@ def _node_index_from_name(proxy_node: str) -> int | None:
     if tail.isdigit():
         return max(1, int(tail))
     return None
+
+
+def _normalize_environment_code(value: str) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.isdigit():
+        return text.zfill(3)
+    return text
+
+
+def _environment_codes_match(code_a, code_b) -> bool:
+    normalized_a = _normalize_environment_code(code_a)
+    normalized_b = _normalize_environment_code(code_b)
+    if normalized_a and normalized_b:
+        if normalized_a == normalized_b:
+            return True
+        try:
+            return int(normalized_a) == int(normalized_b)
+        except ValueError:
+            return False
+    return normalized_a == normalized_b
 
 
 def _proxy_name_aliases(proxy_node: str) -> list[str]:
@@ -230,30 +258,9 @@ def _load_yaml_file(path: Path) -> dict:
 
 
 def _clash_config_candidates() -> list[Path]:
-    config_dir = settings.clash_config_dir
-    candidates = [
-        PROJECT_CLASH_PROXY_FILE,
-        config_dir / "clash-verge.yaml",
-        config_dir / "clash-verge-check.yaml",
-        config_dir / "config.yaml",
-    ]
-
-    profiles_config = _load_yaml_file(config_dir / "profiles.yaml")
-    current_uid = str(profiles_config.get("current", "") or "")
-    items = profiles_config.get("items", [])
-    if current_uid and isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict) or str(item.get("uid", "")) != current_uid:
-                continue
-            file_name = str(item.get("file", "") or "")
-            if file_name:
-                candidates.append(config_dir / "profiles" / file_name)
-
-    unique_candidates: list[Path] = []
-    for candidate in candidates:
-        if candidate not in unique_candidates:
-            unique_candidates.append(candidate)
-    return unique_candidates
+    # Compatibility name: this project no longer reads or mutates the user's
+    # Clash Verge profile. Only the runtime private proxy file is used.
+    return [PROJECT_CLASH_PROXY_FILE]
 
 
 def _find_clash_proxy_definition(proxy_node: str) -> tuple[dict | None, Path | None, str]:
@@ -289,86 +296,13 @@ def _playwright_proxy_from_clash(proxy_node: str) -> ProxyLaunchConfig | None:
         return None
 
     scheme = "http" if proxy_type in {"http", "https"} else proxy_type
-    source_path = path.name if path else "Clash Verge config"
+    source_path = path.name if path else "project proxy config"
     return ProxyLaunchConfig(
         server=f"{scheme}://{host}:{int(port)}",
         username=str(proxy.get("username", "") or ""),
         password=str(proxy.get("password", "") or ""),
         source=f"{source_path}:{matched_name}",
     )
-
-
-def _clash_api_proxy_ports() -> dict[str, int]:
-    try:
-        return ClashApiClient(timeout=4.0).local_proxy_ports()
-    except Exception:
-        return {}
-
-
-def _clash_global_proxy_ports() -> set[int]:
-    api_ports = _clash_api_proxy_ports()
-    if api_ports:
-        return set(api_ports.values())
-
-    ports: set[int] = set()
-    for path in _clash_config_candidates():
-        payload = _load_yaml_file(path)
-        for key in ("mixed-port", "port", "socks-port", "redir-port", "tproxy-port"):
-            value = payload.get(key)
-            try:
-                if value:
-                    ports.add(int(value))
-            except (TypeError, ValueError):
-                continue
-    return ports
-
-
-def _environment_proxy_group_name(environment_code: str | None) -> str:
-    if not environment_code:
-        return ""
-    return f"ENV_{str(environment_code).zfill(3)}_PROXY"
-
-
-def _select_proxy_via_clash_api(
-    environment_code: str | None,
-    proxy_node: str,
-) -> tuple[str, bool]:
-    node_name = proxy_node.strip()
-    if not node_name or node_name.upper() == "DIRECT":
-        return "DIRECT node selected; Clash API selection skipped.", False
-
-    try:
-        client = ClashApiClient(timeout=5.0)
-        groups = client.proxy_groups()
-    except Exception as exc:
-        return f"Clash API is unavailable; selection skipped: {exc}", False
-
-    environment_group = _environment_proxy_group_name(environment_code)
-    if not environment_group or environment_group not in groups:
-        return (
-            f"Clash API connected, but project group {environment_group or '-'} "
-            "was not found. GLOBAL will not be changed.",
-            False,
-        )
-
-    try:
-        client.select_proxy(environment_group, node_name)
-    except Exception as exc:
-        return f"Clash API failed to select {node_name} on {environment_group}: {exc}", False
-
-    return f"Clash API selected {node_name} on {environment_group}.", True
-
-
-def _shared_clash_endpoint_from_api() -> str | None:
-    ports = _clash_api_proxy_ports()
-    for key in ("mixed", "http", "socks"):
-        port = ports.get(key)
-        if not port:
-            continue
-        endpoint = _find_open_proxy_endpoint(port)
-        if endpoint:
-            return endpoint
-    return None
 
 
 def choose_proxy_launch_config(
@@ -385,47 +319,13 @@ def choose_proxy_launch_config(
             "DIRECT node selected; browser will not force Playwright proxy.",
         )
 
-    api_note, api_selected = _select_proxy_via_clash_api(environment_code, node_name)
-
     direct_proxy = _playwright_proxy_from_clash(node_name)
     if direct_proxy is not None:
         return (
             direct_proxy,
             (
-                f"{api_note} Using direct Clash-compatible proxy definition from "
+                "Using direct Playwright proxy definition from "
                 f"{direct_proxy.source}; environment display port is {environment_port}."
-            ),
-        )
-
-    global_ports = _clash_global_proxy_ports()
-    if environment_port in global_ports and api_selected:
-        endpoint = _find_open_proxy_endpoint(environment_port)
-        if endpoint and allow_shared_fallback:
-            return (
-                ProxyLaunchConfig(server=endpoint, source=f"api-shared-port:{environment_port}"),
-                (
-                    f"{api_note} Using Clash API shared endpoint {endpoint}. "
-                    "This endpoint is not isolated by environment."
-                ),
-            )
-
-    endpoint = _find_open_proxy_endpoint(environment_port)
-    if endpoint and environment_port not in global_ports:
-        return (
-            ProxyLaunchConfig(server=endpoint, source=f"local-port:{environment_port}"),
-            (
-                f"{api_note} Using environment proxy endpoint {endpoint} "
-                f"for node {node_name}."
-            ),
-        )
-
-    shared_endpoint = _shared_clash_endpoint_from_api()
-    if shared_endpoint and api_selected and allow_shared_fallback:
-        return (
-            ProxyLaunchConfig(server=shared_endpoint, source="api-shared-clash-port"),
-            (
-                f"{api_note} Using Clash API shared endpoint {shared_endpoint}. "
-                "For full isolation, import per-environment listener config into Clash."
             ),
         )
 
@@ -433,9 +333,17 @@ def choose_proxy_launch_config(
         return (
             ProxyLaunchConfig(server=None, source="unavailable"),
             (
-                f"Environment proxy port {environment_port} is not reachable, and no "
-                f"direct Playwright-compatible Clash node was found for {node_name}. "
-                "Shared Clash fallback is disabled to prevent environments from mixing."
+                f"No direct Playwright-compatible proxy node was found for {node_name}. "
+                "Add the proxy server in the client proxy-node list."
+            ),
+        )
+
+    endpoint = _find_open_proxy_endpoint(environment_port)
+    if endpoint:
+        return (
+            ProxyLaunchConfig(server=endpoint, source=f"local-port:{environment_port}"),
+            (
+                f"Using local fallback proxy endpoint {endpoint} for node {node_name}."
             ),
         )
 
@@ -451,7 +359,7 @@ def choose_proxy_launch_config(
             return (
                 ProxyLaunchConfig(server=endpoint, source=f"shared-port:{port}"),
                 (
-                    f"{api_note} Using shared Clash fallback proxy endpoint {endpoint} "
+                    f"Using shared fallback proxy endpoint {endpoint} "
                     f"for node {node_name}."
                 ),
             )
@@ -488,12 +396,196 @@ def write_browser_log(code: str, message: str) -> None:
         handle.write(f"[{timestamp}] {message}\n")
 
 
+def _profile_launch_failure_is_recoverable(message: str) -> bool:
+    message = message.lower()
+    return any(
+        marker in message
+        for marker in (
+            "target page, context or browser has been closed",
+            "processsingleton",
+            "user data directory is already in use",
+            "failed to create a process singleton",
+        )
+    )
+
+
+def _backup_profile_for_rebuild(code: str, profile_dir: Path, reason: str) -> Path | None:
+    if not profile_dir.exists():
+        return None
+
+    backup_root = ROOT_DIR / "runtime" / "profile_backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_root / f"{code}_launch_failed_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    try:
+        shutil.move(str(profile_dir), str(backup_path))
+    except OSError as exc:
+        write_browser_log(code, f"Profile rebuild backup failed: {exc}")
+        return None
+
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    write_browser_log(
+        code,
+        f"Profile was backed up and rebuilt because Chromium could not launch: {reason}. Backup={backup_path}",
+    )
+    return backup_path
+
+
+def _profile_meta_path(profile_dir: Path) -> Path:
+    return profile_dir / PROFILE_META_FILENAME
+
+
+def _read_profile_meta(profile_dir: Path) -> dict:
+    meta_path = _profile_meta_path(profile_dir)
+    if not meta_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _profile_has_browser_data(profile_dir: Path) -> bool:
+    if not profile_dir.exists():
+        return False
+
+    try:
+        entries = list(profile_dir.iterdir())
+    except OSError:
+        return False
+    return any(entry.name != PROFILE_META_FILENAME for entry in entries)
+
+
+def _write_profile_meta(
+    profile_dir: Path,
+    code: str,
+    name: str,
+    proxy_node: str,
+    port: int,
+    account: str,
+) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "environment_code": code,
+        "environment_name": name,
+        "account": account or "-",
+        "proxy": proxy_node,
+        "port": port,
+        "updated_at": _now_iso(),
+    }
+    _profile_meta_path(profile_dir).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _prepare_profile_identity(
+    code: str,
+    name: str,
+    proxy_node: str,
+    port: int,
+    profile_dir: Path,
+    account: str,
+) -> None:
+    account = str(account or "").strip()
+    if not account:
+        _write_profile_meta(profile_dir, code, name, proxy_node, port, "-")
+        return
+
+    meta = _read_profile_meta(profile_dir)
+    meta_account = str(meta.get("account", "")).strip()
+    if meta_account and meta_account not in {"-", account}:
+        _backup_profile_for_rebuild(
+            code,
+            profile_dir,
+            f"profile account {meta_account} differs from configured account {account}",
+        )
+    elif not meta_account and _profile_has_browser_data(profile_dir):
+        _backup_profile_for_rebuild(
+            code,
+            profile_dir,
+            f"profile has browser data but no account marker for configured account {account}",
+        )
+
+    _write_profile_meta(profile_dir, code, name, proxy_node, port, account)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _status_label(status: str) -> str:
+    return {
+        "NEW": "NEW",
+        "LOGIN_REQUIRED": "LOGIN_REQUIRED",
+        "READY": "READY",
+        "RUNNING": "RUNNING",
+        "ERROR": "ERROR",
+    }.get(status, status or "UNKNOWN")
+
+def update_environment_runtime_state(
+    code: str,
+    status: str,
+    pid: int | str | None = None,
+    started: bool = False,
+) -> None:
+    """Keep the client state file aligned with the real browser process.
+
+    The desktop UI is not the only launcher during testing, so the environment
+    process also updates this lightweight state file.
+    """
+
+    if not ENV_STATE_FILE.exists():
+        return
+
+    try:
+        payload = json.loads(ENV_STATE_FILE.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return
+
+    environments = payload.get("environments")
+    if not isinstance(environments, list):
+        return
+
+    normalized_code = _normalize_environment_code(code)
+    changed = False
+    for environment in environments:
+        if not isinstance(environment, dict):
+            continue
+        if not _environment_codes_match(environment.get("code", ""), normalized_code):
+            continue
+
+        environment["status"] = status
+        environment["login"] = _status_label(status)
+        environment["updated_at"] = _now_iso()
+        if pid is not None:
+            environment["last_open_pid"] = str(pid) if pid else ""
+        if started:
+            environment["last_opened_at"] = _now_iso()
+        changed = True
+        break
+
+    if not changed:
+        return
+
+    payload["updated_at"] = _now_iso()
+    tmp_path = ENV_STATE_FILE.with_suffix(ENV_STATE_FILE.suffix + ".tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(ENV_STATE_FILE)
+    except OSError:
+        pass
+
+
 def _command_path(code: str) -> Path:
-    return ENV_COMMAND_DIR / f"env_{str(code).zfill(3)}.json"
+    code = _normalize_environment_code(code)
+    return ENV_COMMAND_DIR / f"env_{code}.json"
 
 
 def load_environment_command(code: str) -> dict | None:
@@ -502,7 +594,7 @@ def load_environment_command(code: str) -> dict | None:
         return None
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
 
@@ -527,6 +619,14 @@ def save_environment_command(code: str, payload: dict) -> None:
 def run_pending_command(code: str, page) -> None:
     command = load_environment_command(code)
     if not command or command.get("status") != "PENDING":
+        return
+
+    if not _has_tiktok_session_cookie(page):
+        if not command.get("waiting_for_login_logged"):
+            command["waiting_for_login_logged"] = True
+            command["waiting_for_login_at"] = _now_iso()
+            save_environment_command(code, command)
+            write_browser_log(code, "Pending task is waiting for TikTok login session cookie.")
         return
 
     command["status"] = "RUNNING"
@@ -585,7 +685,7 @@ def load_login_credentials(code: str) -> tuple[str, str]:
     for environment in environments:
         if not isinstance(environment, dict):
             continue
-        if str(environment.get("code", "")).zfill(3) != str(code).zfill(3):
+        if not _environment_codes_match(environment.get("code", ""), code):
             continue
         username = str(environment.get("account", "")).strip()
         password = str(environment.get("tiktok_password", ""))
@@ -642,8 +742,8 @@ def fill_tiktok_login(page, code: str, username: str, password: str, render_wait
             "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'email') "
             "or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'username') "
             "or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone') "
-            "or contains(@placeholder,'邮箱') or contains(@placeholder,'账号') "
-            "or contains(@placeholder,'用户名')]"
+            "or contains(@placeholder,'閭') or contains(@placeholder,'璐﹀彿') "
+            "or contains(@placeholder,'鐢ㄦ埛鍚?)]"
         ),
     ]
     password_selectors = [
@@ -656,7 +756,7 @@ def fill_tiktok_login(page, code: str, username: str, password: str, render_wait
         "button[type='submit']",
         (
             "xpath=//button[contains(., 'Log in') or contains(., 'Login') "
-            "or contains(., '登录') or contains(., 'Masuk')]"
+            "or contains(., '鐧诲綍') or contains(., 'Masuk')]"
         ),
     ]
 
@@ -716,19 +816,7 @@ def is_tiktok_logged_in(page, code: str) -> bool:
         write_browser_log(code, "TikTok session cookie found; skip auto login form.")
         return True
 
-    logged_in_selectors = [
-        "[data-e2e='profile-icon']",
-        "[data-e2e='nav-profile']",
-        "a[href*='/messages']",
-        "a[href*='/upload']",
-        "a[href*='/@'] img",
-        "button[aria-label*='Profile' i]",
-        "button[aria-label*='Profil' i]",
-    ]
-    if _visible_any(page, logged_in_selectors):
-        write_browser_log(code, "TikTok logged-in UI detected; skip auto login form.")
-        return True
-
+    write_browser_log(code, "TikTok session cookie was not found; login form will be attempted.")
     return False
 
 
@@ -755,7 +843,24 @@ def open_tiktok_entry_or_login(
 
 
 def main() -> int:
+    global ENV_STATE_FILE
+    global ENV_LOCK_DIR
+    global ENV_COMMAND_DIR
+
     args = parse_args()
+    args.code = _normalize_environment_code(args.code)
+    if not args.code:
+        print("Invalid environment code.")
+        return 1
+
+    ENV_STATE_FILE = Path(args.env_state_file)
+    ENV_LOCK_DIR = Path(args.env_lock_dir)
+    ENV_COMMAND_DIR = Path(args.env_command_dir)
+    if args.collector_data_dir:
+        os.environ["TK_AI_CRM_COLLECTOR_DATA_DIR"] = str(Path(args.collector_data_dir))
+    if args.owner_username:
+        os.environ["TK_AI_CRM_OWNER_USERNAME"] = str(args.owner_username)
+
     lock_acquired, lock_owner_pid = acquire_environment_lock(args.code)
     if not lock_acquired:
         message = f"Environment {args.code} is already running, PID={lock_owner_pid}."
@@ -773,8 +878,25 @@ def main() -> int:
     )
     login_username, login_password = load_login_credentials(args.code)
     write_browser_log(args.code, proxy_note)
+    _prepare_profile_identity(
+        args.code,
+        args.name,
+        args.proxy_node,
+        args.port,
+        profile_dir,
+        login_username,
+    )
+    final_status = "LOGIN_REQUIRED" if login_username else "NEW"
+    session_seen = False
+    update_environment_runtime_state(
+        args.code,
+        "RUNNING",
+        pid=os.getpid(),
+        started=True,
+    )
 
     if args.proxy_node.strip().upper() != "DIRECT" and proxy_config.server is None:
+        update_environment_runtime_state(args.code, "ERROR", pid="")
         release_environment_lock(args.code, lock_owner_pid)
         print(proxy_note)
         return 4
@@ -783,18 +905,19 @@ def main() -> int:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
     except ImportError:
+        update_environment_runtime_state(args.code, "ERROR", pid="")
         release_environment_lock(args.code, lock_owner_pid)
         print("Playwright is not installed. Run: pip install -r requirements.txt")
         return 2
 
+    context = None
+    launch_errors: list[str] = []
+    profile_rebuilt = False
     try:
         with sync_playwright() as playwright:
-            context = None
-            launch_errors = []
-
             # Use Playwright's managed Chromium only. Do not launch Edge, and do
             # not attach to the user's system Chrome profile.
-            for launch_kwargs in ({},):
+            for launch_kwargs in ({}, {}):
                 try:
                     context_options = {
                         "user_data_dir": str(profile_dir),
@@ -833,9 +956,24 @@ def main() -> int:
                     )
                     break
                 except PlaywrightError as exc:
-                    launch_errors.append(str(exc))
+                    error_text = str(exc)
+                    launch_errors.append(error_text)
+                    if (
+                        not profile_rebuilt
+                        and _profile_launch_failure_is_recoverable(error_text)
+                    ):
+                        backup_path = _backup_profile_for_rebuild(
+                            args.code,
+                            profile_dir,
+                            error_text.splitlines()[0] if error_text else "unknown",
+                        )
+                        profile_rebuilt = backup_path is not None
+                        if profile_rebuilt:
+                            continue
+                    break
 
             if context is None:
+                final_status = "ERROR"
                 print(
                     "Playwright Chromium could not be launched. "
                     "Run `playwright install chromium` inside the project venv.\n"
@@ -854,11 +992,16 @@ def main() -> int:
                     login_password,
                     render_wait,
                 )
+                session_seen = _has_tiktok_session_cookie(page)
+                if session_seen:
+                    final_status = "READY"
             except Exception as exc:
-                # Browser is the product here; network may fail when the assigned
-                # Clash port is not active yet, but the environment still opened.
-                write_browser_log(args.code, f"Navigation/login failed for {args.url}: {exc}")
-                pass
+                # Browser is the product here; network or login may fail while
+                # the environment itself still opened.
+                write_browser_log(
+                    args.code,
+                    f"Navigation/login failed for {args.url}: {exc}",
+                )
 
             try:
                 while True:
@@ -869,18 +1012,38 @@ def main() -> int:
                             if not active_page.is_closed()
                         ]
                     except Exception:
+                        write_browser_log(
+                            args.code,
+                            "Failed to read active pages; exiting environment runtime loop.",
+                        )
                         break
 
                     if not active_pages:
-                        write_browser_log(args.code, "All browser pages were closed; environment process exits.")
+                        write_browser_log(
+                            args.code,
+                            "All browser pages were closed; environment process exits.",
+                        )
                         break
-                    run_pending_command(args.code, active_pages[0])
+
+                    active_page = active_pages[0]
+                    if not session_seen:
+                        try:
+                            session_seen = _has_tiktok_session_cookie(active_page)
+                            if session_seen:
+                                final_status = "READY"
+                        except Exception:
+                            pass
+                    run_pending_command(args.code, active_page)
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
-            finally:
-                context.close()
     finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        update_environment_runtime_state(args.code, final_status, pid="")
         release_environment_lock(args.code, lock_owner_pid)
 
     return 0

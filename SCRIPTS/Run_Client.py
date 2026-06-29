@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 
-"""Legacy launcher kept for local UI smoke checks.
-
-Production usage should start SCRIPTS/Run_Client.py.
-"""
+"""Launch the production desktop client."""
 
 from pathlib import Path
 import sys

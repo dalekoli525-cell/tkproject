@@ -26,6 +26,18 @@ USERS_FILE = SERVER_STATE_DIR / "users.json"
 INVITES_FILE = SERVER_STATE_DIR / "invite_codes.json"
 SESSIONS_FILE = SERVER_STATE_DIR / "sessions.json"
 SESSION_TTL_HOURS = 12
+DEFAULT_BOOTSTRAP_USERS = [
+    {
+        "username": "admin",
+        "password": "admin",
+        "role": "admin",
+    },
+    {
+        "username": "client",
+        "password": "client",
+        "role": "operator",
+    },
+]
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -57,6 +69,47 @@ def load_users() -> dict:
 
 def save_users(payload: dict) -> None:
     write_json(USERS_FILE, payload)
+
+
+def ensure_default_users() -> None:
+    """Create local bootstrap users for first-run testing.
+
+    Production deployment should replace this local JSON bootstrap with a
+    database migration or an operator-controlled admin creation step.
+    """
+
+    payload = load_users()
+    rows = [
+        row
+        for row in payload.get("users", [])
+        if isinstance(row, dict)
+    ]
+    existing = {str(row.get("username", "")) for row in rows}
+    changed = False
+
+    for default_user in DEFAULT_BOOTSTRAP_USERS:
+        username = default_user["username"]
+        if username in existing:
+            continue
+
+        password = hash_password(default_user["password"])
+        rows.append(
+            {
+                "username": username,
+                "password_salt": password["salt"],
+                "password_hash": password["hash"],
+                "role": default_user["role"],
+                "is_active": True,
+                "created_at": now_iso(),
+                "last_login_at": "",
+                "bootstrap_user": True,
+            }
+        )
+        changed = True
+
+    if changed:
+        payload["users"] = rows
+        save_users(payload)
 
 
 def load_invites() -> dict:

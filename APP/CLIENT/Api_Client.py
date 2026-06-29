@@ -163,6 +163,23 @@ class ClientApi:
         payload = self._request("GET", "/environments").json()
         return payload if isinstance(payload, list) else []
 
+    def create_environment(self, payload: dict) -> dict:
+        response = self._request(
+            "POST",
+            "/environments",
+            json=payload,
+        ).json()
+        return response if isinstance(response, dict) else {}
+
+    def delete_environment(self, code: str, owner_username: str = "") -> dict:
+        params = {"owner_username": owner_username.strip()} if owner_username else {}
+        response = self._request(
+            "DELETE",
+            f"/environments/{code}",
+            params=params,
+        ).json()
+        return response if isinstance(response, dict) else {}
+
     def list_collected_users(self, limit: int = 300, tiktok_id: str = "") -> list[dict]:
         payload = self._request(
             "GET",
