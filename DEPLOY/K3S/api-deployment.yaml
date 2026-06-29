@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tk-ai-crm-api
+  namespace: tk-ai-crm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tk-ai-crm-api
+  template:
+    metadata:
+      labels:
+        app: tk-ai-crm-api
+    spec:
+      containers:
+        - name: api
+          image: registry.example.local/tk-ai-crm-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: tk-ai-crm-config
+            - secretRef:
+                name: tk-ai-crm-secrets
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+

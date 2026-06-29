@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tk-ai-crm-worker
+  namespace: tk-ai-crm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tk-ai-crm-worker
+  template:
+    metadata:
+      labels:
+        app: tk-ai-crm-worker
+    spec:
+      containers:
+        - name: worker
+          image: registry.example.local/tk-ai-crm-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: tk-ai-crm-config
+            - secretRef:
+                name: tk-ai-crm-secrets
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+

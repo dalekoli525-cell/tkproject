@@ -1,0 +1,2 @@
+"""TikTok collection worker package."""
+

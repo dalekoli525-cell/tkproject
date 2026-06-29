@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tk-ai-crm-api
+  namespace: tk-ai-crm
+spec:
+  selector:
+    app: tk-ai-crm-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+

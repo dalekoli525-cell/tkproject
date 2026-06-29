@@ -1,0 +1,12 @@
+.git
+.idea
+.venv
+__pycache__
+*.pyc
+CACHE
+EXPORTS
+LOGS
+runtime
+legacy
+.env
+

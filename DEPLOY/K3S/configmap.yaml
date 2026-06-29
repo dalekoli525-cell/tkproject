@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tk-ai-crm-config
+  namespace: tk-ai-crm
+data:
+  APP_NAME: "TK AI CRM"
+  APP_ENV: "production"
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8000"
+  WORKER_CONCURRENCY: "2"
+  TIKTOK_RENDER_WAIT_SECONDS: "30"
+  PROXY_PORT_START: "7901"
+
