@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
-import shutil
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import QHeaderView
 from PyQt6.QtWidgets import QLabel
 from PyQt6.QtWidgets import QLineEdit
 from PyQt6.QtWidgets import QMainWindow
+from PyQt6.QtWidgets import QMenu
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtWidgets import QPushButton
 from PyQt6.QtWidgets import QSizePolicy
@@ -45,7 +46,6 @@ from PyQt6.QtWidgets import QTextEdit
 from PyQt6.QtWidgets import QVBoxLayout
 from PyQt6.QtWidgets import QWidget
 
-from APP.SHARED.constants import DEFAULT_PROXY_PORT_START
 from APP.SHARED.constants import ENV_STATUS_ERROR
 from APP.SHARED.constants import ENV_STATUS_LOGIN_REQUIRED
 from APP.SHARED.constants import ENV_STATUS_NEW
@@ -54,7 +54,6 @@ from APP.SHARED.constants import ENV_STATUS_RUNNING
 from APP.SHARED.constants import TASK_MODE_HASHTAG
 from APP.SHARED.constants import TASK_MODE_RECOMMEND
 from APP.CLIENT.Api_Client import ClientApi
-from APP.CLIENT.Clash_Api_Client import ClashApiClient
 from APP.CLIENT.Client_Domain import build_proxy_port_map
 from APP.CLIENT.Client_Domain import dedupe_environments_by_code
 from APP.CLIENT.Client_Domain import environment_codes_match
@@ -67,31 +66,31 @@ from APP.CLIENT.Environment_Launcher import EnvironmentLauncher
 from APP.CLIENT.Environment_Launcher import EnvironmentLaunchError
 from APP.CLIENT.Environment_Launcher import EnvironmentLaunchRequest
 from APP.CLIENT.Environment_Process_Manager import EnvironmentProcessManager
-from APP.CLIENT.Local_Json_Store import read_json_file
 from APP.CLIENT.Local_Json_Store import read_jsonl_file
 from APP.CLIENT.Local_Json_Store import write_json_file
 from APP.CLIENT.Client_State_Service import ClientStateService
+from APP.CLIENT.Profile_State_Service import ProfileStateService
 from APP.CLIENT.Task_Command_Service import TaskCommandService
 from APP.CLIENT.Ui_Style import STYLE
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 CLIENT_STATE_DIR = ROOT_DIR / "runtime" / "client_state"
-MAIN_VIEWPORT_WIDTH = 1300
+MAIN_VIEWPORT_WIDTH = 1220
 MAIN_VIEWPORT_HEIGHT = 820
-CELL_CONTROL_HEIGHT = 34
-CELL_HORIZONTAL_MARGIN = 10
-CELL_VERTICAL_MARGIN = 10
-ACTION_BUTTON_MIN_WIDTH = 60
+CELL_CONTROL_HEIGHT = 36
+CELL_HORIZONTAL_MARGIN = 9
+CELL_VERTICAL_MARGIN = 8
+ACTION_BUTTON_MIN_WIDTH = 86
 ENV_ROW_HEIGHT = CELL_CONTROL_HEIGHT + (CELL_VERTICAL_MARGIN * 2) + 4
 ENV_HEADER_HEIGHT = 46
-ENV_MAX_VISIBLE_ROWS = 7
-ENV_TABLE_COLUMN_WIDTHS = [58, 230, 190, 270, 92, 110, 110, 100]
-ENV_TABLE_COLUMN_MINIMUMS = [46, 150, 118, 150, 66, 66, 66, 62]
-PROFILE_META_FILENAME = "tk_ai_crm_profile.json"
+ENV_MIN_VISIBLE_ROWS = 4
+ENV_MAX_VISIBLE_ROWS = 8
+ENV_TABLE_COLUMN_WIDTHS = [56, 190, 160, 220, 132, 122, 96]
+ENV_TABLE_COLUMN_MINIMUMS = [44, 126, 104, 126, 112, 112, 88]
 TASK_MODE_LABELS = {
-    TASK_MODE_RECOMMEND: "Recommendation Collection",
-    TASK_MODE_HASHTAG: "Hashtag Collection",
+    TASK_MODE_RECOMMEND: "推荐",
+    TASK_MODE_HASHTAG: "标签",
 }
 
 class ClientWindow(QMainWindow):
@@ -103,6 +102,7 @@ class ClientWindow(QMainWindow):
         self.browser_processes: list[object] = []
         self.shutdown_started = False
         self.startup_messages: list[str] = []
+        self.log_panel: QTextEdit | None = None
         self.api_client = ClientApi()
         self.current_user = self.api_client.user if self.api_client.user else {}
         self._set_user_scope()
@@ -111,21 +111,18 @@ class ClientWindow(QMainWindow):
         self.command_status_cache: dict[str, str] = {}
         self.workspace: QWidget | None = None
         self.sidebar_panel: QFrame | None = None
-        self.settings_panel: QFrame | None = None
         self.environment_table: QTableWidget | None = None
-        self.log_panel: QTextEdit | None = None
         self.status_timer: QTimer | None = None
         self.page_stack: QStackedWidget | None = None
         self.user_label: QLabel | None = None
         self.nav_buttons: list[QPushButton] = []
         self.page_titles = [
-            "Environments",
-            "TikTok Accounts",
-            "Collection Tasks",
-            "Tag Classes",
-            "Data Query",
-            "Log Monitor",
-            "System Settings",
+            "环境管理",
+            "TikTok账号",
+            "标签分类",
+            "数据查询",
+            "日志监控",
+            "系统设置",
         ]
         self.content_layout: QVBoxLayout | None = None
         self.body_layout: QHBoxLayout | None = None
@@ -148,9 +145,9 @@ class ClientWindow(QMainWindow):
         self.tag_name_input: QLineEdit | None = None
         self.tag_tags_input: QLineEdit | None = None
         self.tag_blocked_input: QLineEdit | None = None
-        self.setWindowTitle("TK AI CRM Client")
+        self.setWindowTitle("TK AI CRM 客户端")
         self.resize(*self._default_window_size())
-        self.setMinimumSize(1260, 720)
+        self.setMinimumSize(1180, 700)
         self._build_ui()
         for message in self.startup_messages:
             self._append_log(message)
@@ -169,8 +166,8 @@ class ClientWindow(QMainWindow):
             return MAIN_VIEWPORT_WIDTH, MAIN_VIEWPORT_HEIGHT + 36
 
         available = screen.availableGeometry()
-        width = min(MAIN_VIEWPORT_WIDTH + 18, max(1260, available.width() - 40))
-        height = min(MAIN_VIEWPORT_HEIGHT + 40, max(720, available.height() - 50))
+        width = min(MAIN_VIEWPORT_WIDTH + 18, max(1180, available.width() - 40))
+        height = min(MAIN_VIEWPORT_HEIGHT + 40, max(700, available.height() - 50))
         return width, height
 
     def _safe_scope_name(self, username: str) -> str:
@@ -202,11 +199,13 @@ class ClientWindow(QMainWindow):
         self.state_service = ClientStateService(self.state_dir, self._now_iso)
         self.env_state_file = self.state_service.env_state_file
         self.task_state_file = self.state_service.task_state_file
+        self.task_defaults_file = self.state_service.task_defaults_file
         self.tag_class_state_file = self.state_service.tag_class_state_file
         self.proxy_node_state_file = self.state_service.proxy_node_state_file
         self.env_lock_dir = self.state_service.env_lock_dir
         self.env_command_dir = self.state_service.env_command_dir
         self.profile_dir = self.state_service.profile_dir
+        self.browser_instance_dir = self.state_service.browser_instance_dir
         self.collector_data_dir = self.state_service.collector_data_dir
         self._ensure_user_scoped_dirs()
 
@@ -223,6 +222,9 @@ class ClientWindow(QMainWindow):
     def _task_command_service(self) -> TaskCommandService:
         return TaskCommandService(self.env_command_dir, self._now_iso)
 
+    def _profile_state_service(self) -> ProfileStateService:
+        return ProfileStateService(ROOT_DIR, self._now_iso)
+
     def _ensure_user_scoped_dirs(self) -> None:
         self.state_service.ensure_dirs()
 
@@ -235,12 +237,15 @@ class ClientWindow(QMainWindow):
         self._sync_environment_ports_with_nodes()
         self.tasks = self._load_tasks()
         self._append_log(
-            f"Switched user scope: {self._current_username()} ({self.state_dir})"
+            f"已切换用户数据目录：{self._current_username()} ({self.state_dir})"
         )
         self._save_environments()
 
     def _default_profile_dir(self, code: str) -> str:
         return self.state_service.default_profile_dir(code)
+
+    def _default_browser_dir(self, code: str) -> str:
+        return self.state_service.default_browser_dir(code)
 
     @staticmethod
     def _default_proxy_nodes():
@@ -254,21 +259,9 @@ class ClientWindow(QMainWindow):
 
     def _load_initial_proxy_nodes(self):
         local_nodes = self._load_local_proxy_nodes()
-        try:
-            snapshot = ClashApiClient().get_proxy_snapshot()
-        except Exception as exc:
-            self.startup_messages.append(f"Startup proxy sync failed; using default nodes: {exc}")
-            nodes = local_nodes or self._default_proxy_nodes()
-            return self._dedupe_nodes(nodes)
-
-        nodes = [
-            node
-            for node in snapshot.nodes
-            if isinstance(node, str) and node.strip()
-        ]
-        nodes.extend(local_nodes)
+        nodes = local_nodes or self._default_proxy_nodes()
         if not nodes:
-            self.startup_messages.append("Startup proxy sync returned no nodes; using default nodes")
+            self.startup_messages.append("未配置代理服务器，已使用 DIRECT。")
             nodes = self._default_proxy_nodes()
         return self._dedupe_nodes(nodes)
 
@@ -294,6 +287,47 @@ class ClientWindow(QMainWindow):
         return ClientStateService.tag_class_by_name(self.tag_classes, name)
 
     @staticmethod
+    def _proxy_display_host(proxy_node) -> str:
+        node = str(proxy_node or "").strip()
+        if not node:
+            return "-"
+        if node.upper() == "DIRECT":
+            return "直连"
+
+        body = node
+        if "://" in body:
+            body = body.split("://", 1)[1]
+        body = body.split("/", 1)[0].strip()
+        if "@" in body:
+            body = body.rsplit("@", 1)[1]
+        host = body.split(":", 1)[0].strip()
+        return host or node
+
+    @classmethod
+    def _proxy_display_text(cls, proxy_node) -> str:
+        return cls._proxy_display_host(proxy_node)
+
+    @classmethod
+    def _proxy_log_text(cls, proxy_node) -> str:
+        host = cls._proxy_display_host(proxy_node)
+        return "直连" if host == "直连" else f"代理 {host}"
+
+    @classmethod
+    def _proxy_connection_note(cls, note: str) -> str:
+        note = str(note or "")
+        match = re.search(r"((?:https?|socks5)://[^。\s]+)", note)
+        if not match:
+            return note
+        host = cls._proxy_display_host(match.group(1))
+        return note.replace(match.group(1), host)
+
+    def _load_task_defaults(self) -> dict:
+        return self.state_service.load_task_defaults()
+
+    def _save_task_defaults(self, defaults: dict) -> None:
+        self.state_service.save_task_defaults(defaults)
+
+    @staticmethod
     def _tag_payload_to_text(value):
         return tag_payload_to_text(value)
 
@@ -303,6 +337,25 @@ class ClientWindow(QMainWindow):
             for node in self.proxy_nodes
             if str(node).strip().upper() != "DIRECT"
         ]
+
+    def _proxy_usage_count(self, proxy_node, exclude_code=None) -> int:
+        normalized = str(proxy_node or "").strip()
+        if not normalized:
+            return 0
+
+        return sum(
+            1
+            for environment in getattr(self, "environments", [])
+            if not self._environment_codes_match(environment.get("code", ""), exclude_code)
+            and str(environment.get("proxy", "")).strip() == normalized
+        )
+
+    def _proxy_choice_text(self, proxy_node, exclude_code=None) -> str:
+        label = self._proxy_display_text(proxy_node)
+        usage_count = self._proxy_usage_count(proxy_node, exclude_code=exclude_code)
+        if usage_count <= 0:
+            return label
+        return f"{label} · 已分配 {usage_count} 个环境"
 
     def _proxy_alias_to_available(self, proxy_node):
         proxy_node = str(proxy_node or "").strip()
@@ -326,6 +379,17 @@ class ClientWindow(QMainWindow):
         return proxy_node
 
     def _next_available_proxy_node(self, exclude_code=None):
+        return self.proxy_nodes[0] if self.proxy_nodes else "DIRECT"
+
+    def _preferred_proxy_node(self):
+        for environment in reversed(getattr(self, "environments", [])):
+            proxy_node = str(environment.get("proxy", "")).strip()
+            if proxy_node and proxy_node in self.proxy_nodes:
+                return proxy_node
+
+        for proxy_node in self.proxy_nodes:
+            if str(proxy_node).strip().upper() != "DIRECT":
+                return proxy_node
         return self.proxy_nodes[0] if self.proxy_nodes else "DIRECT"
 
     def _repair_environment_proxy_assignments(self):
@@ -399,10 +463,12 @@ class ClientWindow(QMainWindow):
             return
         paused, status = self._task_command_service().request_pause(code)
         if not paused:
-            self._append_log(f"Environment {code} has no running collection task to pause")
+            self._append_log(f"环境 {code} 当前没有运行中的采集任务")
             return
 
-        self._append_log(f"Environment {code} pause requested")
+        self._append_log(
+            f"环境 {code} 已请求暂停：不再采集新视频，等待当前候选筛选完成后自动关闭环境"
+        )
         self._render_environment_rows()
 
     @staticmethod
@@ -411,7 +477,13 @@ class ClientWindow(QMainWindow):
 
     @staticmethod
     def _status_label(status):
-        return status_label(status)
+        return {
+            ENV_STATUS_NEW: "未绑定",
+            ENV_STATUS_READY: "已就绪",
+            ENV_STATUS_LOGIN_REQUIRED: "待登录",
+            ENV_STATUS_RUNNING: "运行中",
+            ENV_STATUS_ERROR: "异常",
+        }.get(status, status_label(status))
 
     @staticmethod
     def _normalize_environment_code(value: str) -> str:
@@ -422,31 +494,16 @@ class ClientWindow(QMainWindow):
         return environment_codes_match(code_a, code_b)
 
     def _next_environment_code(self):
-        numbers = [
-            int(ClientWindow._normalize_environment_code(environment.get("code", "")))
-            for environment in getattr(self, "environments", [])
-            if ClientWindow._normalize_environment_code(environment.get("code", "")).isdigit()
-        ]
-        return str((max(numbers) if numbers else 0) + 1).zfill(3)
+        return self.state_service.next_environment_code(
+            getattr(self, "environments", [])
+        )
 
     def _next_environment_port(self, exclude_code=None, reserved_ports=None):
-        used_ports = set(reserved_ports or [])
-        used_ports = {
-            int(environment["port"])
-            for environment in getattr(self, "environments", [])
-            if not ClientWindow._environment_codes_match(
-                environment.get("code", ""), exclude_code
-            )
-            and (
-                str(environment.get("port", "")).isdigit()
-                or isinstance(environment.get("port"), int)
-            )
-        }
-        used_ports.update(set(reserved_ports or []))
-        port = DEFAULT_PROXY_PORT_START
-        while port in used_ports:
-            port += 1
-        return port
+        return self.state_service.next_environment_port(
+            getattr(self, "environments", []),
+            exclude_code=exclude_code,
+            reserved_ports=reserved_ports,
+        )
 
     @staticmethod
     def _node_index_from_name(proxy_node):
@@ -456,9 +513,8 @@ class ClientWindow(QMainWindow):
         return build_proxy_port_map(proxy_nodes)
 
     def _port_for_proxy_node(self, proxy_node, fallback=None):
-        # Ports belong to environments, not proxy nodes. Multiple environments
-        # may intentionally use the same Clash node while keeping separate
-        # browser profiles and local listener ports.
+        # Ports are kept as environment metadata only. Proxy traffic now goes
+        # directly through the proxy server string stored in the environment.
         try:
             if fallback is not None and int(fallback) >= 1024:
                 return int(fallback)
@@ -506,7 +562,6 @@ class ClientWindow(QMainWindow):
         self.page_stack.setObjectName("PageStack")
         self.page_stack.addWidget(self._content())
         self.page_stack.addWidget(self._account_page())
-        self.page_stack.addWidget(self._task_page())
         self.page_stack.addWidget(self._tag_library_page())
         self.page_stack.addWidget(
             self._data_query_page()
@@ -538,12 +593,6 @@ class ClientWindow(QMainWindow):
         layout.addWidget(self.user_label)
         self._update_user_badge()
 
-        login_button = QPushButton("Service Login")
-        login_button.setObjectName("ServiceButton")
-        login_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        login_button.clicked.connect(self._show_service_auth_dialog)
-        layout.addWidget(login_button)
-
         for index, text in enumerate(self.page_titles):
             button = QPushButton(text)
             button.setObjectName("NavActive" if index == 0 else "NavButton")
@@ -554,7 +603,7 @@ class ClientWindow(QMainWindow):
 
         layout.addStretch()
 
-        version = QLabel("Client 0.1")
+        version = QLabel("客户端 0.1")
         version.setObjectName("Version")
         layout.addWidget(version)
         return panel
@@ -563,10 +612,13 @@ class ClientWindow(QMainWindow):
         username = str(self.current_user.get("username", "")).strip()
         return username or "local"
 
+    def _is_admin_user(self) -> bool:
+        return str(self.current_user.get("role", "")).strip().lower() == "admin"
+
     def _update_user_badge(self):
         if self.user_label is None:
             return
-        self.user_label.setText(f"Current User: {self._current_username()}")
+        self.user_label.setText(f"当前用户：{self._current_username()}")
 
     def _show_service_auth_dialog(self, require_login: bool = False) -> bool:
         if require_login and self.api_client.is_authenticated:
@@ -577,8 +629,8 @@ class ClientWindow(QMainWindow):
                 try:
                     self._sync_from_server(show_message=False)
                 except Exception as exc:
-                    self._append_log(f"Session refresh failed: {exc}")
-                self._append_log(f"Logged in with local session: {self._current_username()}")
+                    self._append_log(f"会话刷新失败：{exc}")
+                self._append_log(f"已使用本地会话登录：{self._current_username()}")
                 return True
             try:
                 self._sync_from_server(show_message=False)
@@ -587,7 +639,7 @@ class ClientWindow(QMainWindow):
                 self.api_client.clear_session()
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Service Login")
+        dialog.setWindowTitle("用户登录")
         dialog.setMinimumWidth(430)
 
         layout = QVBoxLayout(dialog)
@@ -595,26 +647,23 @@ class ClientWindow(QMainWindow):
         layout.setSpacing(12)
 
         form = QFormLayout()
-        api_input = QLineEdit(self.api_client.base_url)
-        api_input.setObjectName("Input")
         username_input = QLineEdit(str(self.current_user.get("username", "")))
         username_input.setObjectName("Input")
         password_input = QLineEdit()
         password_input.setObjectName("Input")
         password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        register_input = QCheckBox("Register with invite code")
+        register_input = QCheckBox("使用邀请码注册")
         invite_input = QLineEdit()
         invite_input.setObjectName("Input")
-        invite_input.setPlaceholderText("6-digit invite code")
+        invite_input.setPlaceholderText("请输入 6 位邀请码")
 
-        form.addRow("API URL", api_input)
-        form.addRow("Username", username_input)
-        form.addRow("Password", password_input)
+        form.addRow("账号", username_input)
+        form.addRow("密码", password_input)
         form.addRow("", register_input)
-        form.addRow("Invite Code", invite_input)
+        form.addRow("邀请码", invite_input)
         layout.addLayout(form)
 
-        hint = QLabel("After login, the client syncs server configuration and user-scoped data.")
+        hint = QLabel("登录后将自动同步当前用户的环境、标签和任务配置。")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -623,6 +672,8 @@ class ClientWindow(QMainWindow):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("登录")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -630,33 +681,31 @@ class ClientWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
 
-        base_url = api_input.text().strip().rstrip("/")
         username = username_input.text().strip()
         password = password_input.text()
         invite_code = invite_input.text().strip()
 
-        if not base_url or not username or not password:
-            QMessageBox.warning(self, "Login Failed", "API URL, username, and password are required.")
+        if not username or not password:
+            QMessageBox.warning(self, "登录失败", "账号和密码不能为空。")
             return False
 
-        self.api_client.base_url = base_url
         try:
             if register_input.isChecked():
                 if len(invite_code) != 6 or not invite_code.isdigit():
-                    QMessageBox.warning(self, "Register Failed", "Invite code must be 6 digits.")
+                    QMessageBox.warning(self, "注册失败", "邀请码必须是 6 位数字。")
                     return False
                 self.api_client.register(username, password, invite_code)
             self.api_client.login(username, password)
         except Exception as exc:
-            self._append_log(f"Service login failed: {exc}")
-            QMessageBox.warning(self, "Login Failed", str(exc))
+            self._append_log(f"登录失败: {exc}")
+            QMessageBox.warning(self, "登录失败", str(exc))
             return False
 
         previous_scope = self.current_user_scope
         self._set_user_scope(self.api_client.user)
         self._reload_user_bound_state()
         self._update_user_badge()
-        self._append_log(f"Service login succeeded: {self._current_username()}")
+        self._append_log(f"登录成功: {self._current_username()}")
         if previous_scope != self.current_user_scope:
             self._apply_layout_for_user_switch()
         self._sync_from_server(show_message=False)
@@ -671,7 +720,7 @@ class ClientWindow(QMainWindow):
         if self.task_mode_selector is not None:
             self.task_mode_selector.setCurrentIndex(0)
         self._sync_summary_stats()
-        self._append_log(f"Switched user scope: {self._current_username()}")
+        self._append_log(f"已切换用户数据目录：{self._current_username()}")
 
     def _apply_bootstrap(self, payload):
         user = payload.get("user", {})
@@ -726,7 +775,7 @@ class ClientWindow(QMainWindow):
                 "tiktok_password": local.get("tiktok_password", ""),
                 "status": row.get("status", local.get("status", ENV_STATUS_NEW)),
                 "task_mode": row.get("task_mode", local.get("task_mode", TASK_MODE_RECOMMEND)),
-                "tag_class": row.get("tag_class", local.get("tag_class", "Default-A")),
+                "tag_class": row.get("tag_class", local.get("tag_class", "")),
                 "profile_dir": row.get(
                     "profile_dir",
                     local.get("profile_dir", self._default_profile_dir(code)),
@@ -741,7 +790,7 @@ class ClientWindow(QMainWindow):
     def _sync_from_server(self, checked=False, show_message=True):
         if not self.api_client.is_authenticated:
             if show_message:
-                QMessageBox.information(self, "Not Logged In", "Please log in to the API service first.")
+                QMessageBox.information(self, "未登录", "请先登录服务端账号。")
             return False
 
         try:
@@ -749,9 +798,9 @@ class ClientWindow(QMainWindow):
             self._apply_bootstrap(bootstrap)
             server_environments = self.api_client.list_environments()
         except Exception as exc:
-            self._append_log(f"Server sync failed: {exc}")
+            self._append_log(f"同步服务失败：{exc}")
             if show_message:
-                QMessageBox.warning(self, "Server Sync Failed", str(exc))
+                QMessageBox.warning(self, "同步服务失败", str(exc))
             return False
 
         if server_environments:
@@ -764,12 +813,12 @@ class ClientWindow(QMainWindow):
             self._save_environments()
             self._render_environment_rows()
         else:
-            self._append_log("Server has no environments; keeping current local list")
+            self._append_log("服务端暂无环境，保留当前本地环境列表")
 
         self._sync_summary_stats()
-        self._append_log("Server configuration synced")
+        self._append_log("服务端配置已同步")
         if show_message:
-            QMessageBox.information(self, "Sync Complete", "Server configuration and environment data synced.")
+            QMessageBox.information(self, "同步完成", "服务端配置和环境数据已同步。")
         return True
 
     def _switch_page(self, index):
@@ -837,18 +886,18 @@ class ClientWindow(QMainWindow):
 
     def _account_page(self):
         page, layout, header = self._basic_page(
-            "TikTok Accounts",
-            "Shows the TikTok account state bound to each local browser environment.",
+            "TikTok账号",
+            "显示每个浏览器环境绑定的 TikTok 账号状态。",
         )
 
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.setObjectName("SecondaryButton")
         refresh.setFixedSize(100, 38)
         header.addWidget(refresh)
 
         table = QTableWidget(0, 6)
         table.setObjectName("EnvironmentTable")
-        table.setHorizontalHeaderLabels(["Code", "Name", "TikTok Account", "Status", "Proxy Node", "Profile"])
+        table.setHorizontalHeaderLabels(["编号", "环境名称", "TikTok账号", "状态", "代理节点", "Profile"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -876,7 +925,7 @@ class ClientWindow(QMainWindow):
                     item = QTableWidgetItem(str(value))
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     table.setItem(row_index, column_index, item)
-            status.setText(f"Loaded {len(self.environments)} account bindings.")
+            status.setText(f"已加载 {len(self.environments)} 个账号绑定。")
 
         refresh.clicked.connect(load_accounts)
         QTimer.singleShot(0, load_accounts)
@@ -885,6 +934,107 @@ class ClientWindow(QMainWindow):
     @staticmethod
     def _read_jsonl(path, limit=100):
         return read_jsonl_file(Path(path), limit=limit, tail=True)
+
+    @staticmethod
+    def _collection_filename(dataset: str) -> str:
+        return {
+            "candidates": "comment_candidates.jsonl",
+            "qualified": "collected_users.jsonl",
+        }.get(str(dataset or ""), "collected_users.jsonl")
+
+    def _load_local_collection_rows(
+        self,
+        dataset: str,
+        limit: int,
+        tiktok_id: str = "",
+    ) -> list[dict]:
+        rows = read_jsonl_file(
+            self.collector_data_dir / self._collection_filename(dataset),
+            limit=100000000,
+            tail=False,
+        )
+        query = str(tiktok_id or "").strip().lower()
+        if query:
+            rows = [
+                row
+                for row in rows
+                if query in str(row.get("tiktok_id", "")).lower()
+            ]
+        return rows[-limit:]
+
+    def _load_local_collected_users(self, limit: int, tiktok_id: str = "") -> list[dict]:
+        return self._load_local_collection_rows(
+            "qualified",
+            limit=limit,
+            tiktok_id=tiktok_id,
+        )
+
+    def _load_collection_rows(
+        self,
+        dataset: str,
+        limit: int,
+        tiktok_id: str = "",
+    ) -> tuple[list[dict], str]:
+        source = "本地"
+        if self.api_client.is_authenticated:
+            try:
+                if dataset == "candidates":
+                    rows = self.api_client.list_comment_candidates(
+                        limit=limit,
+                        tiktok_id=tiktok_id,
+                    )
+                else:
+                    rows = self.api_client.list_collected_users(
+                        limit=limit,
+                        tiktok_id=tiktok_id,
+                    )
+                return rows, "服务端"
+            except Exception as exc:
+                self._append_log(f"服务端数据查询失败，改用本地数据: {exc}")
+
+        return self._load_local_collection_rows(
+            dataset,
+            limit=limit,
+            tiktok_id=tiktok_id,
+        ), source
+
+    def _load_collected_user_rows(self, limit: int, tiktok_id: str = "") -> tuple[list[dict], str]:
+        return self._load_collection_rows(
+            "qualified",
+            limit=limit,
+            tiktok_id=tiktok_id,
+        )
+
+    @staticmethod
+    def _unique_tiktok_ids(rows: list[dict]) -> list[str]:
+        seen: set[str] = set()
+        ids: list[str] = []
+        for row in rows:
+            tiktok_id = str(row.get("tiktok_id", "")).strip()
+            if not tiktok_id or tiktok_id in seen:
+                continue
+            seen.add(tiktok_id)
+            ids.append(tiktok_id)
+        return ids
+
+    def _export_tiktok_ids(self, rows: list[dict], label: str) -> Path | None:
+        ids = self._unique_tiktok_ids(rows)
+        if not ids:
+            QMessageBox.information(self, "没有可导出数据", "当前查询结果没有 TikTokID。")
+            return None
+
+        desktop = Path.home() / "Desktop"
+        desktop.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        path = desktop / f"tiktok_ids_{label}_{timestamp}.txt"
+        path.write_text("\n".join(ids) + "\n", encoding="utf-8")
+        self._append_log(f"已导出 TikTokID：{path} / {len(ids)} 条")
+        QMessageBox.information(
+            self,
+            "导出完成",
+            f"已导出 {len(ids)} 个 TikTokID。\n{path}",
+        )
+        return path
 
     def _data_query_page(self):
         page = QWidget()
@@ -896,23 +1046,77 @@ class ClientWindow(QMainWindow):
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
-        title = QLabel("Data Query")
+        title = QLabel("数据查询")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("Query locally collected TikTok IDs. Production mode can switch this to the server API.")
+        subtitle = QLabel("查询当前用户可见的采集结果，普通用户不会看到数据库原始数据。")
         subtitle.setObjectName("PageSubtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header.addLayout(title_box, 1)
 
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.setObjectName("SecondaryButton")
         refresh.setFixedSize(100, 38)
         header.addWidget(refresh)
         layout.addLayout(header)
 
-        table = QTableWidget(0, 5)
+        query_card = QFrame()
+        query_card.setObjectName("PlaceholderCard")
+        self._apply_shadow(query_card, blur=12, y=4)
+        query_layout = QGridLayout(query_card)
+        query_layout.setContentsMargins(16, 12, 16, 12)
+        query_layout.setHorizontalSpacing(12)
+        query_layout.setVerticalSpacing(8)
+
+        type_label = QLabel("数据类型")
+        type_label.setObjectName("FieldLabel")
+        dataset_input = QComboBox()
+        dataset_input.setObjectName("ProxyCombo")
+        dataset_input.addItem("达标用户", "qualified")
+        dataset_input.addItem("候选用户", "candidates")
+        dataset_input.setFixedHeight(36)
+
+        id_label = QLabel("TikTokID")
+        id_label.setObjectName("FieldLabel")
+        id_input = QLineEdit()
+        id_input.setObjectName("Input")
+        id_input.setPlaceholderText("可留空，输入后按 ID 模糊查询")
+        id_input.setFixedHeight(36)
+
+        page_size_label = QLabel("每页数量")
+        page_size_label.setObjectName("FieldLabel")
+        page_size_input = QSpinBox()
+        page_size_input.setObjectName("Input")
+        page_size_input.setRange(20, 5000)
+        page_size_input.setValue(200)
+        page_size_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page_size_input.setFixedHeight(36)
+
+        query_button = QPushButton("查询")
+        query_button.setObjectName("PrimaryButton")
+        query_button.setFixedSize(92, 36)
+        export_current = QPushButton("导出当前页ID")
+        export_current.setObjectName("SecondaryButton")
+        export_current.setFixedSize(126, 36)
+        export_all = QPushButton("导出全部ID")
+        export_all.setObjectName("SecondaryButton")
+        export_all.setFixedSize(116, 36)
+
+        query_layout.addWidget(type_label, 0, 0)
+        query_layout.addWidget(dataset_input, 0, 1)
+        query_layout.addWidget(id_label, 0, 2)
+        query_layout.addWidget(id_input, 0, 3)
+        query_layout.addWidget(page_size_label, 0, 4)
+        query_layout.addWidget(page_size_input, 0, 5)
+        query_layout.addWidget(query_button, 0, 6)
+        query_layout.addWidget(export_current, 1, 5)
+        query_layout.addWidget(export_all, 1, 6)
+        query_layout.setColumnStretch(3, 1)
+        layout.addWidget(query_card)
+
+        table = QTableWidget(0, 6)
         table.setObjectName("EnvironmentTable")
-        table.setHorizontalHeaderLabels(["TikTok ID", "Source Video", "Tag", "Environment", "Time"])
+        table.setHorizontalHeaderLabels(["TikTok ID", "类型", "来源视频", "标签", "环境", "时间"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -920,31 +1124,73 @@ class ClientWindow(QMainWindow):
         table.setMinimumHeight(420)
         layout.addWidget(table, 1)
 
-        status = QLabel("No data loaded")
+        pager = QFrame()
+        pager.setObjectName("PlaceholderCard")
+        pager_layout = QHBoxLayout(pager)
+        pager_layout.setContentsMargins(14, 8, 14, 8)
+        pager_layout.setSpacing(10)
+        prev_page = QPushButton("上一页")
+        prev_page.setObjectName("SecondaryButton")
+        prev_page.setFixedSize(90, 34)
+        next_page = QPushButton("下一页")
+        next_page.setObjectName("SecondaryButton")
+        next_page.setFixedSize(90, 34)
+        page_label = QLabel("第 1 / 1 页")
+        page_label.setObjectName("Hint")
+        page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page_input = QSpinBox()
+        page_input.setObjectName("Input")
+        page_input.setRange(1, 1)
+        page_input.setValue(1)
+        page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page_input.setFixedSize(86, 34)
+        pager_layout.addWidget(prev_page)
+        pager_layout.addWidget(page_label)
+        pager_layout.addWidget(QLabel("跳转"))
+        pager_layout.addWidget(page_input)
+        pager_layout.addWidget(next_page)
+        pager_layout.addStretch(1)
+        layout.addWidget(pager)
+
+        status = QLabel("未加载数据")
         status.setObjectName("Hint")
         layout.addWidget(status)
 
-        def load_data():
-            source = "local"
-            if self.api_client.is_authenticated:
-                try:
-                    rows = self.api_client.list_collected_users(limit=300)
-                    source = "server"
-                except Exception as exc:
-                    self._append_log(f"Server data query failed; using local data: {exc}")
-                    rows = self._read_jsonl(
-                        self.collector_data_dir / "collected_users.jsonl",
-                        limit=300,
-                    )
-            else:
-                rows = self._read_jsonl(
-                    self.collector_data_dir / "collected_users.jsonl",
-                    limit=300,
-                )
-            table.setRowCount(len(rows))
-            for row_index, row in enumerate(rows):
+        state = {
+            "rows": [],
+            "page_rows": [],
+            "source": "",
+            "page": 1,
+            "page_count": 1,
+            "dataset": "qualified",
+        }
+
+        def current_dataset() -> str:
+            return str(dataset_input.currentData() or "qualified")
+
+        def current_dataset_label() -> str:
+            return str(dataset_input.currentText() or "达标用户")
+
+        def render_page():
+            rows = state["rows"]
+            page_size = max(1, int(page_size_input.value()))
+            total_rows = len(rows)
+            page_count = max(1, (total_rows + page_size - 1) // page_size)
+            state["page_count"] = page_count
+            state["page"] = max(1, min(int(state.get("page", 1)), page_count))
+
+            start = (state["page"] - 1) * page_size
+            page_rows = rows[start:start + page_size]
+            state["page_rows"] = page_rows
+
+            table.setRowCount(len(page_rows))
+            for row_index, row in enumerate(page_rows):
+                row_type = "达标" if row.get("qualified") else "候选"
+                if current_dataset() == "qualified":
+                    row_type = "达标"
                 values = [
                     str(row.get("tiktok_id", "")),
+                    row_type,
                     str(row.get("source_video_id", "")),
                     str(row.get("source_tag", "")),
                     str(row.get("environment_code", "")),
@@ -954,19 +1200,91 @@ class ClientWindow(QMainWindow):
                     item = QTableWidgetItem(value)
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     table.setItem(row_index, column_index, item)
-            status.setText(f"Loaded {len(rows)} collected users from {source}.")
 
-        refresh.clicked.connect(load_data)
-        QTimer.singleShot(0, load_data)
+            page_label.setText(f"第 {state['page']} / {page_count} 页")
+            page_input.blockSignals(True)
+            page_input.setRange(1, page_count)
+            page_input.setValue(state["page"])
+            page_input.blockSignals(False)
+            prev_page.setEnabled(state["page"] > 1)
+            next_page.setEnabled(state["page"] < page_count)
+
+            start_display = 0 if total_rows == 0 else start + 1
+            end_display = min(start + len(page_rows), total_rows)
+            status.setText(
+                f"已从{state['source']}加载 {current_dataset_label()} {total_rows} 条，"
+                f"当前显示 {start_display}-{end_display}，"
+                f"当前查询可导出 TikTokID {len(self._unique_tiktok_ids(rows))} 个。"
+            )
+
+        def load_data(reset_page: bool = True):
+            state["dataset"] = current_dataset()
+            rows, source = self._load_collection_rows(
+                dataset=state["dataset"],
+                limit=100000,
+                tiktok_id=id_input.text(),
+            )
+            state["rows"] = rows
+            state["source"] = source
+            if reset_page:
+                state["page"] = 1
+            render_page()
+
+        def go_prev_page():
+            state["page"] = max(1, int(state.get("page", 1)) - 1)
+            render_page()
+
+        def go_next_page():
+            state["page"] = min(
+                int(state.get("page_count", 1)),
+                int(state.get("page", 1)) + 1,
+            )
+            render_page()
+
+        def jump_page():
+            state["page"] = int(page_input.value())
+            render_page()
+
+        def export_current_ids():
+            if not state["page_rows"]:
+                load_data()
+            self._export_tiktok_ids(
+                state["page_rows"],
+                f"{state['dataset']}_page_{state['page']:03d}",
+            )
+
+        def export_all_ids():
+            dataset = current_dataset()
+            rows, source = self._load_collection_rows(
+                dataset=dataset,
+                limit=100000,
+                tiktok_id=id_input.text(),
+            )
+            state["rows"] = rows
+            state["source"] = source
+            state["dataset"] = dataset
+            self._export_tiktok_ids(rows, f"{dataset}_all")
+
+        refresh.clicked.connect(lambda: load_data(reset_page=True))
+        query_button.clicked.connect(lambda: load_data(reset_page=True))
+        id_input.returnPressed.connect(lambda: load_data(reset_page=True))
+        dataset_input.currentIndexChanged.connect(lambda _: load_data(reset_page=True))
+        page_size_input.valueChanged.connect(lambda _: render_page())
+        prev_page.clicked.connect(go_prev_page)
+        next_page.clicked.connect(go_next_page)
+        page_input.valueChanged.connect(lambda _: jump_page())
+        export_current.clicked.connect(export_current_ids)
+        export_all.clicked.connect(export_all_ids)
+        QTimer.singleShot(0, lambda: load_data(reset_page=True))
         return page
 
     def _log_monitor_page(self):
         page, layout, header = self._basic_page(
-            "Log Monitor",
-            "Review local environment launch, proxy selection, and collection runtime logs.",
+            "日志监控",
+            "查看环境启动、代理选择和采集任务运行日志。",
         )
 
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.setObjectName("SecondaryButton")
         refresh.setFixedSize(100, 38)
         header.addWidget(refresh)
@@ -974,11 +1292,38 @@ class ClientWindow(QMainWindow):
         log_view = QTextEdit()
         log_view.setObjectName("LogPanel")
         log_view.setReadOnly(True)
+        log_view.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         log_view.setMinimumHeight(500)
         layout.addWidget(log_view, 1)
 
-        def load_logs():
+        log_state = {
+            "text": "",
+            "pending_text": "",
+            "pending": False,
+        }
+
+        def apply_log_text(next_text: str, stick_to_bottom: bool, old_value: int = 0):
+            log_view.setUpdatesEnabled(False)
+            log_view.setPlainText(next_text)
+            log_state["text"] = next_text
+            log_state["pending_text"] = ""
+            log_state["pending"] = False
+            log_view.setUpdatesEnabled(True)
+            refresh.setText("刷新")
+
+            def restore_scroll():
+                refreshed_bar = log_view.verticalScrollBar()
+                if stick_to_bottom:
+                    refreshed_bar.setValue(refreshed_bar.maximum())
+                else:
+                    refreshed_bar.setValue(min(old_value, refreshed_bar.maximum()))
+
+            QTimer.singleShot(0, restore_scroll)
+
+        def load_logs(force: bool = False):
             log_dir = ROOT_DIR / "runtime" / "browser_logs"
+            task_log = self.collector_data_dir / "task_logs.jsonl"
             chunks = []
             for path in sorted(log_dir.glob("*.log")) if log_dir.exists() else []:
                 try:
@@ -987,22 +1332,112 @@ class ClientWindow(QMainWindow):
                     continue
                 chunks.append(f"===== {path.name} =====")
                 chunks.extend(lines)
-            log_view.setPlainText("\n".join(chunks) if chunks else "No logs found.")
+            if task_log.exists():
+                chunks.append("===== 采集任务日志 =====")
+                try:
+                    task_lines = task_log.read_text(encoding="utf-8").splitlines()[-160:]
+                except OSError:
+                    task_lines = []
+                for line in task_lines:
+                    try:
+                        payload = json.loads(line)
+                    except ValueError:
+                        chunks.append(line)
+                        continue
+                    created_at = payload.get("created_at", "")
+                    task_code = payload.get("task_code", "")
+                    message = payload.get("message", "")
+                    chunks.append(f"[{created_at}] {task_code}: {message}")
+            next_text = "\n".join(chunks) if chunks else "暂无日志。"
+            if next_text == log_state["text"] or (
+                log_state["pending"] and next_text == log_state["pending_text"]
+            ):
+                return
 
-        refresh.clicked.connect(load_logs)
-        QTimer.singleShot(0, load_logs)
+            scroll_bar = log_view.verticalScrollBar()
+            old_value = scroll_bar.value()
+            old_maximum = scroll_bar.maximum()
+            stick_to_bottom = not log_state["text"] or old_value >= old_maximum - 8
+
+            if not force and not stick_to_bottom:
+                log_state["pending_text"] = next_text
+                log_state["pending"] = True
+                refresh.setText("有新日志")
+                return
+
+            apply_log_text(next_text, stick_to_bottom=True if force else stick_to_bottom, old_value=old_value)
+
+        def apply_pending_if_at_bottom():
+            if not log_state["pending"]:
+                return
+            scroll_bar = log_view.verticalScrollBar()
+            if scroll_bar.value() >= scroll_bar.maximum() - 8:
+                apply_log_text(log_state["pending_text"], stick_to_bottom=True)
+
+        log_view.verticalScrollBar().valueChanged.connect(lambda _value: apply_pending_if_at_bottom())
+        refresh.clicked.connect(lambda: load_logs(force=True))
+        QTimer.singleShot(0, lambda: load_logs(force=True))
+        refresh_timer = QTimer(page)
+        refresh_timer.setInterval(3000)
+        refresh_timer.timeout.connect(lambda: load_logs(force=False))
+        refresh_timer.start()
         return page
 
     def _system_settings_page(self):
         page, layout, header = self._basic_page(
-            "System Settings",
-            "Maintain client runtime parameters. Server mode can synchronize admin-managed settings.",
+            "系统设置",
+            "查看客户端运行参数。服务地址由配置文件或安装包预设，普通用户无需填写。",
         )
 
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.setObjectName("SecondaryButton")
         refresh.setFixedSize(100, 38)
         header.addWidget(refresh)
+
+        window_card = QFrame()
+        window_card.setObjectName("PlaceholderCard")
+        self._apply_shadow(window_card, blur=14, y=5)
+        window_layout = QGridLayout(window_card)
+        window_layout.setContentsMargins(18, 16, 18, 16)
+        window_layout.setHorizontalSpacing(12)
+        window_layout.setVerticalSpacing(10)
+
+        window_title = QLabel("窗口参数")
+        window_title.setObjectName("PanelTitle")
+        window_hint = QLabel("调整主窗口默认尺寸，保存后立即应用。任务条件会在启动环境时弹窗填写。")
+        window_hint.setObjectName("Hint")
+        window_hint.setWordWrap(True)
+        window_layout.addWidget(window_title, 0, 0, 1, 4)
+        window_layout.addWidget(window_hint, 1, 0, 1, 4)
+
+        width_label = QLabel("窗口宽度")
+        width_label.setObjectName("FieldLabel")
+        width_input = QLineEdit(str(max(self.width(), MAIN_VIEWPORT_WIDTH)))
+        width_input.setObjectName("Input")
+        width_input.setFixedHeight(36)
+        self.config_inputs["viewport_width"] = width_input
+
+        height_label = QLabel("窗口高度")
+        height_label.setObjectName("FieldLabel")
+        height_input = QLineEdit(str(max(self.height(), MAIN_VIEWPORT_HEIGHT)))
+        height_input.setObjectName("Input")
+        height_input.setFixedHeight(36)
+        self.config_inputs["viewport_height"] = height_input
+
+        save_window = QPushButton("保存窗口配置")
+        save_window.setObjectName("PrimaryButton")
+        save_window.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_window.setFixedHeight(38)
+        save_window.clicked.connect(self._save_window_config)
+
+        window_layout.addWidget(width_label, 2, 0)
+        window_layout.addWidget(width_input, 2, 1)
+        window_layout.addWidget(height_label, 2, 2)
+        window_layout.addWidget(height_input, 2, 3)
+        window_layout.addWidget(save_window, 2, 4)
+        window_layout.setColumnStretch(1, 1)
+        window_layout.setColumnStretch(3, 1)
+        layout.addWidget(window_card)
 
         card = QFrame()
         card.setObjectName("PlaceholderCard")
@@ -1012,9 +1447,13 @@ class ClientWindow(QMainWindow):
         card_layout.setSpacing(10)
         layout.addWidget(card, 1)
 
+        settings_title = QLabel("运行信息")
+        settings_title.setObjectName("PanelTitle")
+        card_layout.addWidget(settings_title)
+
         settings_table = QTableWidget(0, 2)
         settings_table.setObjectName("EnvironmentTable")
-        settings_table.setHorizontalHeaderLabels(["Setting", "Current Value"])
+        settings_table.setHorizontalHeaderLabels(["配置项", "当前值"])
         settings_table.verticalHeader().setVisible(False)
         settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         settings_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1022,14 +1461,13 @@ class ClientWindow(QMainWindow):
 
         def load_settings():
             rows = [
-                ("Server API", self.api_client.base_url),
-                ("Login Status", f"Logged in: {self._current_username()}" if self.api_client.is_authenticated else "Not logged in; local mode"),
-                ("Clash API", "http://127.0.0.1:9097"),
-                ("Clash Secret", "Loaded from .env / settings"),
-                ("Environment State File", str(self.env_state_file)),
-                ("Task State File", str(self.task_state_file)),
-                ("Profile Root", str(self.profile_dir)),
-                ("Collector Data Dir", str(self.collector_data_dir)),
+                ("服务地址", self.api_client.base_url),
+                ("登录状态", f"已登录：{self._current_username()}" if self.api_client.is_authenticated else "未登录，本地模式"),
+                ("代理方式", "Playwright 代理服务器直连"),
+                ("环境状态文件", str(self.env_state_file)),
+                ("任务状态文件", str(self.task_state_file)),
+                ("Profile目录", str(self.profile_dir)),
+                ("采集数据目录", str(self.collector_data_dir)),
             ]
             settings_table.setRowCount(len(rows))
             for row_index, (key, value) in enumerate(rows):
@@ -1044,11 +1482,11 @@ class ClientWindow(QMainWindow):
 
     def _task_page(self):
         page, layout, header = self._basic_page(
-            "Collection Tasks",
-            "Configure task rules here. Environment rows only start or stop a selected browser environment.",
+            "采集任务",
+            "在这里统一配置任务规则。环境列表只负责启动或关闭指定浏览器环境。",
         )
 
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.setObjectName("SecondaryButton")
         refresh.setFixedSize(100, 38)
         header.addWidget(refresh)
@@ -1063,8 +1501,8 @@ class ClientWindow(QMainWindow):
 
         self.task_mode_selector = QComboBox()
         self.task_mode_selector.setObjectName("ProxyCombo")
-        self.task_mode_selector.addItem("Recommendation Video Collection", TASK_MODE_RECOMMEND)
-        self.task_mode_selector.addItem("Hashtag Video Collection", TASK_MODE_HASHTAG)
+        self.task_mode_selector.addItem("推荐视频采集", TASK_MODE_RECOMMEND)
+        self.task_mode_selector.addItem("标签视频采集", TASK_MODE_HASHTAG)
 
         self.task_tag_selector = QComboBox()
         self.task_tag_selector.setObjectName("ProxyCombo")
@@ -1075,27 +1513,27 @@ class ClientWindow(QMainWindow):
         render_wait.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.config_inputs["render_wait"] = render_wait
 
-        self.skip_zero_comments_checkbox = QCheckBox("Skip videos with 0 comments")
+        self.skip_zero_comments_checkbox = QCheckBox("跳过 0 评论视频")
         self.skip_zero_comments_checkbox.setObjectName("CheckBox")
         self.skip_zero_comments_checkbox.setChecked(True)
 
-        self.ai_video_checkbox = QCheckBox("Enable video AI check")
+        self.ai_video_checkbox = QCheckBox("启用视频 AI 判断")
         self.ai_video_checkbox.setObjectName("CheckBox")
-        self.ai_video_checkbox.setChecked(True)
+        self.ai_video_checkbox.setChecked(False)
 
-        self.ai_user_checkbox = QCheckBox("Enable user AI check")
+        self.ai_user_checkbox = QCheckBox("启用用户 AI 判断")
         self.ai_user_checkbox.setObjectName("CheckBox")
-        self.ai_user_checkbox.setChecked(True)
+        self.ai_user_checkbox.setChecked(False)
 
-        hint = QLabel("No video count limit. Each video opens the comment panel and scrolls until no new comment users appear.")
+        hint = QLabel("视频数量不设上限。每个视频会打开评论区并持续滚动，直到没有新的评论用户。")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
 
-        config_layout.addWidget(QLabel("Task Mode"), 0, 0)
+        config_layout.addWidget(QLabel("任务模式"), 0, 0)
         config_layout.addWidget(self.task_mode_selector, 0, 1)
-        config_layout.addWidget(QLabel("Tag Class"), 0, 2)
+        config_layout.addWidget(QLabel("标签类"), 0, 2)
         config_layout.addWidget(self.task_tag_selector, 0, 3)
-        config_layout.addWidget(QLabel("Render Wait Seconds"), 1, 0)
+        config_layout.addWidget(QLabel("渲染等待秒数"), 1, 0)
         config_layout.addWidget(render_wait, 1, 1)
         config_layout.addWidget(self.skip_zero_comments_checkbox, 1, 2)
         config_layout.addWidget(self.ai_video_checkbox, 1, 3)
@@ -1107,7 +1545,7 @@ class ClientWindow(QMainWindow):
 
         table = QTableWidget(0, 7)
         table.setObjectName("EnvironmentTable")
-        table.setHorizontalHeaderLabels(["Task Code", "Environment", "Mode", "Tag Class", "Video Policy", "Comment Policy", "Status"])
+        table.setHorizontalHeaderLabels(["任务编号", "环境", "模式", "标签类", "视频策略", "评论策略", "状态"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1129,15 +1567,15 @@ class ClientWindow(QMainWindow):
                     task.get("environment_code", ""),
                     task.get("mode_label", task.get("mode", "")),
                     task.get("tag_class", ""),
-                    "Continuous",
-                    "Full comments",
+                    "持续采集",
+                    "全量评论",
                     task.get("status", ""),
                 ]
                 for column_index, value in enumerate(values):
                     item = QTableWidgetItem(str(value))
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     table.setItem(row_index, column_index, item)
-            status.setText(f"Loaded {len(self.tasks)} tasks.")
+            status.setText(f"已加载 {len(self.tasks)} 个任务。")
 
         refresh.clicked.connect(load_tasks)
         QTimer.singleShot(0, load_tasks)
@@ -1145,11 +1583,11 @@ class ClientWindow(QMainWindow):
 
     def _tag_library_page(self):
         page, layout, header = self._basic_page(
-            "Tag Classes",
-            "Each class can contain multiple hashtags. Collection tasks use the selected class as the video matching rule.",
+            "标签分类",
+            "每个标签类可以保存多个标签，采集任务会按选中的标签类匹配视频。",
         )
 
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.setObjectName("SecondaryButton")
         refresh.setFixedSize(88, 38)
         refresh.clicked.connect(self._refresh_tag_table)
@@ -1165,29 +1603,29 @@ class ClientWindow(QMainWindow):
 
         self.tag_name_input = QLineEdit()
         self.tag_name_input.setObjectName("Input")
-        self.tag_name_input.setPlaceholderText("Example: A-Class / Chinese Leads / Malaysia Test")
+        self.tag_name_input.setPlaceholderText("例如：A类 / 华人客户 / 大马测试")
 
         self.tag_tags_input = QLineEdit()
         self.tag_tags_input.setObjectName("Input")
-        self.tag_tags_input.setPlaceholderText("Separate tags with spaces or commas, e.g. malaysia chinese overseas")
+        self.tag_tags_input.setPlaceholderText("多个标签用空格或逗号分隔，例如：大马 华人 华侨")
 
         self.tag_blocked_input = QLineEdit()
         self.tag_blocked_input.setObjectName("Input")
-        self.tag_blocked_input.setPlaceholderText("Blocked tags, e.g. live")
+        self.tag_blocked_input.setPlaceholderText("黑名单标签，例如：直播")
 
-        save = QPushButton("Save Class")
+        save = QPushButton("保存标签类")
         save.setObjectName("PrimaryButton")
         save.clicked.connect(self._save_tag_class_from_editor)
 
-        delete = QPushButton("Delete Selected")
+        delete = QPushButton("删除选中")
         delete.setObjectName("TableDanger")
         delete.clicked.connect(self._delete_selected_tag_class)
 
-        editor_layout.addWidget(QLabel("Class Name"), 0, 0)
+        editor_layout.addWidget(QLabel("分类名称"), 0, 0)
         editor_layout.addWidget(self.tag_name_input, 0, 1)
-        editor_layout.addWidget(QLabel("Tags"), 1, 0)
+        editor_layout.addWidget(QLabel("标签"), 1, 0)
         editor_layout.addWidget(self.tag_tags_input, 1, 1)
-        editor_layout.addWidget(QLabel("Blocked"), 2, 0)
+        editor_layout.addWidget(QLabel("黑名单"), 2, 0)
         editor_layout.addWidget(self.tag_blocked_input, 2, 1)
         editor_layout.addWidget(save, 0, 2)
         editor_layout.addWidget(delete, 1, 2)
@@ -1196,7 +1634,7 @@ class ClientWindow(QMainWindow):
 
         table = QTableWidget(0, 3)
         table.setObjectName("EnvironmentTable")
-        table.setHorizontalHeaderLabels(["Class", "Tags", "Blocked"])
+        table.setHorizontalHeaderLabels(["标签类", "标签", "黑名单"])
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1216,7 +1654,10 @@ class ClientWindow(QMainWindow):
 
         if self.api_client.is_authenticated:
             try:
-                rows = self.api_client.list_tag_classes()
+                if self._is_admin_user():
+                    rows = self.api_client.list_tag_classes()
+                else:
+                    rows = self.api_client.bootstrap().get("tag_classes", [])
                 if rows:
                     normalized = [
                         {
@@ -1229,13 +1670,13 @@ class ClientWindow(QMainWindow):
                             ),
                         }
                         for row in rows
-                        if isinstance(row, dict) and str(row.get("name", "")).strip()
-                    ]
+                            if isinstance(row, dict) and str(row.get("name", "")).strip()
+                        ]
                     if normalized:
                         self.tag_classes = normalized
                         self._save_tag_classes()
             except Exception as exc:
-                self._append_log(f"Server tag class sync failed; using local data: {exc}")
+                self._append_log(f"标签分类同步失败，已使用本地数据：{exc}")
 
         table.blockSignals(True)
         table.setRowCount(len(self.tag_classes))
@@ -1283,7 +1724,7 @@ class ClientWindow(QMainWindow):
 
         name = self.tag_name_input.text().strip()
         if not name:
-            QMessageBox.warning(self, "Tag Classes", "Class name cannot be empty.")
+            QMessageBox.warning(self, "标签分类", "分类名称不能为空。")
             return
 
         tag_class = {
@@ -1291,7 +1732,7 @@ class ClientWindow(QMainWindow):
             "tags": self._parse_tags(self.tag_tags_input.text()),
             "blocked_tags": self._parse_tags(self.tag_blocked_input.text()),
         }
-        if self.api_client.is_authenticated:
+        if self.api_client.is_authenticated and self._is_admin_user():
             try:
                 tag_class = self.api_client.upsert_tag_class(tag_class) or tag_class
                 tag_class = {
@@ -1304,7 +1745,9 @@ class ClientWindow(QMainWindow):
                     ),
                 }
             except Exception as exc:
-                self._append_log(f"Server tag class save failed; saved locally: {exc}")
+                self._append_log(f"服务端标签分类保存失败，已保存到本地：{exc}")
+        elif self.api_client.is_authenticated:
+            self._append_log("当前账号不是管理员，标签分类只保存到本地客户端。")
         self.tag_classes = [
             row
             for row in self.tag_classes
@@ -1313,7 +1756,7 @@ class ClientWindow(QMainWindow):
         self.tag_classes.append(tag_class)
         self._save_tag_classes()
         self._refresh_tag_table()
-        self._append_log(f"Tag class saved: {name}")
+        self._append_log(f"标签分类已保存：{name}")
 
     def _delete_selected_tag_class(self):
         table = self.tag_table
@@ -1321,23 +1764,22 @@ class ClientWindow(QMainWindow):
             return
         selected = table.selectedItems()
         if not selected:
-            QMessageBox.information(self, "Tag Classes", "Select a tag class to delete first.")
+            QMessageBox.information(self, "标签分类", "请先选择一个要删除的标签分类。")
             return
         row = selected[0].row()
         if row < 0 or row >= len(self.tag_classes):
             return
         name = str(self.tag_classes[row].get("name", ""))
-        if len(self.tag_classes) <= 1:
-            QMessageBox.warning(self, "Tag Classes", "At least one tag class must remain.")
-            return
-        answer = QMessageBox.question(self, "Delete Tag Class", f"Delete tag class: {name}?")
+        answer = QMessageBox.question(self, "删除标签分类", f"确认删除标签分类：{name}？")
         if answer != QMessageBox.StandardButton.Yes:
             return
-        if self.api_client.is_authenticated:
+        if self.api_client.is_authenticated and self._is_admin_user():
             try:
                 self.api_client.delete_tag_class(name)
             except Exception as exc:
-                self._append_log(f"Server tag class delete failed; deleted locally: {exc}")
+                self._append_log(f"服务端标签分类删除失败，已删除本地记录：{exc}")
+        elif self.api_client.is_authenticated:
+            self._append_log("当前账号不是管理员，标签分类只从本地客户端删除。")
         self.tag_classes.pop(row)
         self._save_tag_classes()
         self._refresh_tag_table()
@@ -1347,14 +1789,14 @@ class ClientWindow(QMainWindow):
             self.tag_tags_input.clear()
         if self.tag_blocked_input is not None:
             self.tag_blocked_input.clear()
-        self._append_log(f"Tag class deleted: {name}")
+        self._append_log(f"标签分类已删除：{name}")
 
     def _current_task_settings(self):
         mode = TASK_MODE_RECOMMEND
         if self.task_mode_selector is not None:
             mode = self.task_mode_selector.currentData() or TASK_MODE_RECOMMEND
 
-        tag_class_name = self._tag_class_names()[0] if self._tag_class_names() else "Default-A"
+        tag_class_name = self._tag_class_names()[0] if self._tag_class_names() else ""
         if self.task_tag_selector is not None and self.task_tag_selector.currentText():
             tag_class_name = self.task_tag_selector.currentText()
 
@@ -1373,12 +1815,12 @@ class ClientWindow(QMainWindow):
                 else self.skip_zero_comments_checkbox.isChecked()
             ),
             "ai_video_filter_enabled": (
-                True
+                False
                 if self.ai_video_checkbox is None
                 else self.ai_video_checkbox.isChecked()
             ),
             "ai_user_filter_enabled": (
-                True
+                False
                 if self.ai_user_checkbox is None
                 else self.ai_user_checkbox.isChecked()
             ),
@@ -1396,35 +1838,33 @@ class ClientWindow(QMainWindow):
         layout.addLayout(self._header())
         layout.addLayout(self._stats())
 
-        body = QHBoxLayout()
-        self.body_layout = body
-        body.setSpacing(18)
-        body.addWidget(self._environment_table(), 1, Qt.AlignmentFlag.AlignTop)
-        body.addWidget(self._settings_panel(), 0, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(body)
+        layout.addWidget(self._environment_table(), 0, Qt.AlignmentFlag.AlignTop)
+        layout.addStretch(1)
 
         self.log_panel = self._log_panel()
-        layout.addWidget(self.log_panel, 1)
+        layout.addWidget(self.log_panel, 0)
         return panel
 
     def _header(self):
-        layout = QHBoxLayout()
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
 
         title_box = QVBoxLayout()
-        title = QLabel("Browser Environments")
+        title = QLabel("浏览器环境")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("Each environment uses an isolated Playwright Chromium profile. Proxy nodes can be reused without sharing login state.")
+        subtitle = QLabel("每个环境使用独立 Playwright Chromium 资料目录。点击启动后填写任务需求，环境运行中可直接关闭。")
         subtitle.setObjectName("PageSubtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        layout.addLayout(title_box, 1)
+        layout.addLayout(title_box)
 
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
         for text, kind, handler in [
-            ("Refresh", "SecondaryButton", self._refresh_environment_statuses),
-            ("Sync API", "SecondaryButton", self._sync_from_server),
-            ("Sync Proxy", "SecondaryButton", self._sync_proxy_nodes_from_clash),
-            ("Add Proxy", "SecondaryButton", self._show_add_proxy_node_dialog),
-            ("Create Env", "PrimaryButton", self._show_create_environment_dialog),
+            ("刷新状态", "SecondaryButton", self._refresh_environment_statuses),
+            ("同步服务", "SecondaryButton", self._sync_from_server),
+            ("添加代理", "SecondaryButton", self._show_add_proxy_node_dialog),
+            ("创建环境", "PrimaryButton", self._show_create_environment_dialog),
         ]:
             button = QPushButton(text)
             button.setObjectName(kind)
@@ -1432,8 +1872,10 @@ class ClientWindow(QMainWindow):
             button.setFixedSize(100, 40)
             button.clicked.connect(handler)
             self.header_buttons.append(button)
-            layout.addWidget(button)
+            toolbar.addWidget(button)
 
+        toolbar.addStretch(1)
+        layout.addLayout(toolbar)
         return layout
 
     def _stats(self):
@@ -1441,11 +1883,11 @@ class ClientWindow(QMainWindow):
         layout.setSpacing(12)
 
         for title, value in [
-            ("Envs", "4"),
-            ("Logged In", "2"),
-            ("Running", "0"),
-            ("Today", "0"),
-            ("Pending", "0"),
+            ("环境", "4"),
+            ("已就绪", "0"),
+            ("运行中", "0"),
+            ("今日", "0"),
+            ("待处理", "0"),
         ]:
             card = QFrame()
             card.setObjectName("StatCard")
@@ -1474,9 +1916,9 @@ class ClientWindow(QMainWindow):
         overview_layout.setContentsMargins(16, 10, 16, 10)
         overview_layout.setSpacing(3)
 
-        overview_title = QLabel("Runtime Overview")
+        overview_title = QLabel("运行概览")
         overview_title.setObjectName("OverviewTitle")
-        overview_text = QLabel("Environment, proxy, task, and collection state are scoped to the current client user. Local mode writes runtime data on this machine first.")
+        overview_text = QLabel("环境、代理、任务和采集结果都按当前登录用户隔离。本地模式会先写入本机运行数据。")
         overview_text.setObjectName("OverviewText")
         overview_text.setWordWrap(True)
         overview_layout.addWidget(overview_title)
@@ -1485,18 +1927,17 @@ class ClientWindow(QMainWindow):
         return layout
 
     def _environment_table(self):
-        table = QTableWidget(len(self.environments), 8)
+        table = QTableWidget(len(self.environments), 7)
         table.setObjectName("EnvironmentTable")
         table.setHorizontalHeaderLabels(
             [
-                "Index",
-                "Environment",
-                "Proxy",
-                "TikTok Account",
-                "Status",
-                "Task",
-                "Action",
-                "Delete",
+                "编号",
+                "环境名称",
+                "代理",
+                "TikTok账号",
+                "当前状态",
+                "启动/关闭",
+                "删除",
             ]
         )
         table.verticalHeader().setVisible(False)
@@ -1534,7 +1975,6 @@ class ClientWindow(QMainWindow):
     def _populate_environment_row(self, table, row_index, environment):
         values = {
             0: environment["code"],
-            4: self._status_label(environment.get("status", "")),
         }
 
         for column_index, value in values.items():
@@ -1545,36 +1985,33 @@ class ClientWindow(QMainWindow):
         table.setCellWidget(row_index, 1, self._name_editor_container(environment))
         table.setCellWidget(row_index, 2, self._proxy_combo_container(environment))
         table.setCellWidget(row_index, 3, self._account_button_container(environment))
+        table.setCellWidget(row_index, 4, self._status_badge_container(environment))
+        is_running = bool(self._running_environment_pids(environment["code"]))
         command_status = self._environment_command_status(environment["code"])
-        task_is_active = command_status in {"PENDING", "RUNNING"}
-        task_button_text = "Cancel" if command_status == "PENDING" else "Pause" if task_is_active else "Start"
+        command_status_u = str(command_status or "").upper()
+        if is_running and command_status_u in {"PENDING", "RUNNING"}:
+            action_text = "暂停采集"
+            action_style = "TableActionPrimary"
+        elif is_running and command_status_u == "PAUSE_REQUESTED":
+            action_text = "暂停中"
+            action_style = "TableAction"
+        else:
+            action_text = "关闭浏览器" if is_running else "启动"
+            action_style = "TableDanger" if is_running else "TableActionPrimary"
         table.setCellWidget(
             row_index,
             5,
             self._table_button_container(
-                task_button_text,
-                "TableDanger" if task_is_active else "TableAction",
-                (
-                    lambda _, env=environment: self._request_pause_environment_task(env)
-                    if task_is_active
-                    else self._create_collect_task(env)
-                ),
+                action_text,
+                action_style,
+                lambda _, env=environment: self._toggle_environment(env),
             ),
         )
         table.setCellWidget(
             row_index,
             6,
             self._table_button_container(
-                "Open",
-                "TableActionPrimary",
-                lambda _, env=environment: self._open_environment(env),
-            ),
-        )
-        table.setCellWidget(
-            row_index,
-            7,
-            self._table_button_container(
-                "Delete",
+                "删除",
                 "TableDanger",
                 lambda _, env=environment: self._delete_environment(env),
             ),
@@ -1600,10 +2037,10 @@ class ClientWindow(QMainWindow):
             return
 
         total = len(self.environments)
-        account_count = sum(
+        ready_count = sum(
             1
             for environment in self.environments
-            if environment.get("account", "-") != "-"
+            if environment.get("status") == ENV_STATUS_READY
         )
         running_count = sum(
             1
@@ -1617,65 +2054,317 @@ class ClientWindow(QMainWindow):
             if str(task.get("created_at", "")).startswith(today_prefix)
         )
 
-        values = [total, account_count, running_count, today_task_count, 0]
+        values = [total, ready_count, running_count, today_task_count, 0]
         for label, value in zip(self.stat_value_labels, values):
             label.setText(str(value))
 
+    def _task_mode_short_label(self, mode):
+        return TASK_MODE_LABELS.get(str(mode or ""), str(mode or ""))
+
+    def _environment_status_info(self, environment):
+        code = environment.get("code", "")
+        command = self._read_environment_command(code)
+        task = command.get("task", {}) if isinstance(command, dict) else {}
+        task_mode = task.get("mode") or environment.get("task_mode", "")
+        mode_label = self._task_mode_short_label(task_mode)
+        command_status = str(command.get("status", "")).upper() if isinstance(command, dict) else ""
+        is_running = bool(self._running_environment_pids(code))
+
+        if is_running and mode_label:
+            return f"运行中 · {mode_label}", "StatusRunning"
+        if is_running:
+            return "浏览器运行", "StatusRunning"
+        if command_status == "PENDING" and mode_label:
+            return f"准备启动 · {mode_label}", "StatusPending"
+        if command_status == "RUNNING" and mode_label:
+            return f"采集中 · {mode_label}", "StatusRunning"
+        if command_status == "PAUSE_REQUESTED":
+            return "暂停中", "StatusPending"
+        if command_status == "PAUSED":
+            return "已暂停", "StatusPaused"
+        if command_status == "DONE":
+            return "已完成", "StatusDone"
+        if command_status == "ERROR":
+            return "异常", "StatusError"
+        return "未运行", "StatusIdle"
+
+    def _environment_display_status(self, environment):
+        label, _ = self._environment_status_info(environment)
+        return label
+
+    def _status_badge_container(self, environment):
+        text, object_name = self._environment_status_info(environment)
+        label = QLabel(text)
+        label.setObjectName(object_name)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumWidth(94)
+        label.setFixedHeight(CELL_CONTROL_HEIGHT)
+        label.setToolTip(text)
+        return self._cell_control_container(label)
+
     def _show_task_config_dialog(self, environment):
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Task Config - Environment {environment['code']}")
-        dialog.setMinimumWidth(460)
+        dialog.setWindowTitle(f"启动任务 - 环境 {environment['code']}")
+        dialog.setMinimumWidth(680)
 
         layout = QVBoxLayout(dialog)
-        form = QFormLayout()
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(10)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        header_card = QFrame()
+        header_card.setObjectName("DialogHero")
+        self._apply_shadow(header_card, blur=14, y=5)
+        header_layout = QVBoxLayout(header_card)
+        header_layout.setContentsMargins(18, 16, 18, 16)
+        header_layout.setSpacing(5)
+        title = QLabel(f"环境 {environment['code']} · 启动采集")
+        title.setObjectName("DialogTitle")
+        subtitle = QLabel("选择推荐或标签模式，设置达标用户条件，确认后启动独立浏览器环境。")
+        subtitle.setObjectName("DialogSubtitle")
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        layout.addWidget(header_card)
+
+        form_card = QFrame()
+        form_card.setObjectName("DialogCard")
+        self._apply_shadow(form_card, blur=12, y=4)
+        form = QGridLayout(form_card)
+        form.setContentsMargins(18, 16, 18, 16)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(12)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
+
+        task_defaults = self._load_task_defaults()
 
         task_mode_input = QComboBox()
         task_mode_input.setObjectName("ProxyCombo")
         for mode, label in TASK_MODE_LABELS.items():
             task_mode_input.addItem(label, mode)
         current_mode_index = task_mode_input.findData(
-            environment.get("task_mode", TASK_MODE_RECOMMEND)
+            task_defaults.get(
+                "task_mode",
+                environment.get("task_mode", TASK_MODE_RECOMMEND),
+            )
         )
         task_mode_input.setCurrentIndex(current_mode_index if current_mode_index >= 0 else 0)
 
         tag_class_input = QComboBox()
         tag_class_input.setObjectName("ProxyCombo")
-        tag_class_input.addItems(self._tag_class_names())
-        current_tag_index = tag_class_input.findText(environment.get("tag_class", "Default-A"))
+        tag_class_names = self._tag_class_names()
+        saved_tag_class = str(
+            task_defaults.get(
+                "tag_class",
+                environment.get("tag_class", ""),
+            )
+        ).strip()
+        if saved_tag_class and saved_tag_class not in tag_class_names:
+            tag_class_names.append(saved_tag_class)
+        tag_class_input.addItems(tag_class_names)
+        current_tag_index = tag_class_input.findText(saved_tag_class)
         tag_class_input.setCurrentIndex(current_tag_index if current_tag_index >= 0 else 0)
+
+        max_followers_input = QSpinBox()
+        max_followers_input.setRange(0, 100000000)
+        max_followers_input.setValue(int(task_defaults.get("followers_max", 0)))
+        max_followers_input.setObjectName("Input")
+
+        max_following_input = QSpinBox()
+        max_following_input.setRange(0, 100000000)
+        max_following_input.setValue(int(task_defaults.get("following_max", 0)))
+        max_following_input.setObjectName("Input")
+
+        registration_year_input = QSpinBox()
+        registration_year_input.setRange(2000, datetime.now().year)
+        registration_year_input.setValue(
+            min(
+                datetime.now().year,
+                max(2000, int(task_defaults.get("registration_year_min", 2023))),
+            )
+        )
+        registration_year_input.setObjectName("Input")
+
+        regions_input = QLineEdit(str(task_defaults.get("registration_regions_text", "SG,MY")))
+        regions_input.setObjectName("Input")
+        regions_input.setPlaceholderText("例如：SG,MY")
+
+        min_posts_input = QSpinBox()
+        min_posts_input.setRange(0, 1000000)
+        min_posts_input.setValue(int(task_defaults.get("min_posts", 0)))
+        min_posts_input.setObjectName("Input")
+
+        comment_days_input = QSpinBox()
+        comment_days_input.setRange(0, 3650)
+        comment_days_input.setValue(int(task_defaults.get("comment_max_days_ago", 0)))
+        comment_days_input.setObjectName("Input")
 
         render_wait_input = QSpinBox()
         render_wait_input.setRange(5, 300)
-        render_wait_input.setValue(self._read_int_config("render_wait", default=30, minimum=5))
+        render_wait_input.setValue(
+            int(task_defaults.get("render_wait_seconds", self._read_int_config("render_wait", default=30, minimum=5)))
+        )
         render_wait_input.setObjectName("Input")
 
-        form.addRow("Task Mode", task_mode_input)
-        form.addRow("Tag Class", tag_class_input)
-        form.addRow("Render Wait Seconds", render_wait_input)
-        layout.addLayout(form)
+        watch_min_input = QSpinBox()
+        watch_min_input.setRange(2, 120)
+        watch_min_input.setValue(int(task_defaults.get("watch_seconds_min", 4)))
+        watch_min_input.setObjectName("Input")
 
-        hint = QLabel("The task is assigned only to this environment. Videos are unlimited and each comment panel is fully scrolled.")
+        watch_max_input = QSpinBox()
+        watch_max_input.setRange(2, 180)
+        watch_max_input.setValue(
+            max(
+                int(watch_min_input.value()),
+                int(task_defaults.get("watch_seconds_max", 10)),
+            )
+        )
+        watch_max_input.setObjectName("Input")
+
+        for field in (
+            task_mode_input,
+            tag_class_input,
+            max_followers_input,
+            max_following_input,
+            registration_year_input,
+            regions_input,
+            min_posts_input,
+            comment_days_input,
+            render_wait_input,
+            watch_min_input,
+            watch_max_input,
+        ):
+            field.setFixedHeight(38)
+
+        for number_field in (
+            max_followers_input,
+            max_following_input,
+            registration_year_input,
+            min_posts_input,
+            comment_days_input,
+            render_wait_input,
+            watch_min_input,
+            watch_max_input,
+        ):
+            number_field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        regions_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        def sync_tag_enabled():
+            is_tag_mode = task_mode_input.currentData() == TASK_MODE_HASHTAG
+            tag_class_input.setEnabled(is_tag_mode)
+
+        task_mode_input.currentIndexChanged.connect(lambda _: sync_tag_enabled())
+        sync_tag_enabled()
+
+        def add_label(text, row, column):
+            label = QLabel(text)
+            label.setObjectName("DialogFieldLabel")
+            form.addWidget(label, row, column)
+            return label
+
+        basic_title = QLabel("任务模式")
+        basic_title.setObjectName("SectionTitle")
+        form.addWidget(basic_title, 0, 0, 1, 4)
+        add_label("类型", 1, 0)
+        form.addWidget(task_mode_input, 1, 1)
+        add_label("标签类", 1, 2)
+        form.addWidget(tag_class_input, 1, 3)
+
+        filter_title = QLabel("用户筛选")
+        filter_title.setObjectName("SectionTitle")
+        form.addWidget(filter_title, 2, 0, 1, 4)
+        add_label("粉丝量 ≤", 3, 0)
+        form.addWidget(max_followers_input, 3, 1)
+        add_label("关注量 ≤", 3, 2)
+        form.addWidget(max_following_input, 3, 3)
+        add_label("注册时间 ≥", 4, 0)
+        form.addWidget(registration_year_input, 4, 1)
+        add_label("注册地区", 4, 2)
+        form.addWidget(regions_input, 4, 3)
+        add_label("作品数量 ≥", 5, 0)
+        form.addWidget(min_posts_input, 5, 1)
+        add_label("评论时间(天)", 5, 2)
+        form.addWidget(comment_days_input, 5, 3)
+
+        runtime_title = QLabel("运行参数")
+        runtime_title.setObjectName("SectionTitle")
+        form.addWidget(runtime_title, 6, 0, 1, 4)
+        add_label("渲染等待(秒)", 7, 0)
+        form.addWidget(render_wait_input, 7, 1)
+        add_label("观看最短(秒)", 7, 2)
+        form.addWidget(watch_min_input, 7, 3)
+        add_label("观看最长(秒)", 8, 0)
+        form.addWidget(watch_max_input, 8, 1)
+        layout.addWidget(form_card)
+
+        hint = QLabel(
+            "说明：作品数量填 0 表示不限；评论时间填 0 表示不限，填 2 表示只采集 48 小时内评论。"
+            "粉丝量和关注量填 100 表示不能超过 100，填 0 表示不限。"
+            "注册时间填 2023 表示 2023 年之前注册的用户不达标。观看秒数用于控制打开评论区前的停留节奏。"
+        )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
+        footer = QFrame()
+        footer.setObjectName("DialogFooter")
+        self._apply_shadow(footer, blur=10, y=3)
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(16, 12, 16, 12)
+        footer_layout.setSpacing(10)
+        footer_layout.addWidget(hint, 1)
+        cancel_button = QPushButton("取消")
+        cancel_button.setObjectName("DialogSecondaryButton")
+        cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_button.setFixedHeight(38)
+        start_button = QPushButton("启动")
+        start_button.setObjectName("DialogPrimaryButton")
+        start_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        start_button.setFixedHeight(38)
+        start_button.setDefault(True)
+        cancel_button.clicked.connect(dialog.reject)
+        start_button.clicked.connect(dialog.accept)
+        footer_layout.addWidget(cancel_button)
+        footer_layout.addWidget(start_button)
+        layout.addWidget(footer)
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        overrides = {
+        task_defaults = {
             "task_mode": task_mode_input.currentData(),
             "tag_class": tag_class_input.currentText(),
+            "followers_max": int(max_followers_input.value()),
+            "following_max": int(max_following_input.value()),
+            "registration_year_min": int(registration_year_input.value()),
+            "registration_regions_text": regions_input.text(),
+            "min_posts": int(min_posts_input.value()),
+            "comment_max_days_ago": int(comment_days_input.value()),
             "render_wait_seconds": int(render_wait_input.value()),
+            "watch_seconds_min": int(watch_min_input.value()),
+            "watch_seconds_max": max(
+                int(watch_min_input.value()),
+                int(watch_max_input.value()),
+            ),
+        }
+        self._save_task_defaults(task_defaults)
+        render_wait_widget = self.config_inputs.get("render_wait")
+        if render_wait_widget is not None:
+            render_wait_widget.setText(str(task_defaults["render_wait_seconds"]))
+
+        overrides = {
+            "task_mode": task_defaults["task_mode"],
+            "tag_class": task_defaults["tag_class"],
+            "render_wait_seconds": task_defaults["render_wait_seconds"],
+            "watch_seconds_min": task_defaults["watch_seconds_min"],
+            "watch_seconds_max": task_defaults["watch_seconds_max"],
+            "target_filters": {
+                "followers_max": task_defaults["followers_max"],
+                "following_max": task_defaults["following_max"],
+                "registration_year_min": task_defaults["registration_year_min"],
+                "registration_regions": self._parse_regions(
+                    task_defaults["registration_regions_text"]
+                ),
+                "min_posts": task_defaults["min_posts"],
+                "comment_max_days_ago": task_defaults["comment_max_days_ago"],
+            },
         }
         environment["task_mode"] = overrides["task_mode"]
         environment["tag_class"] = overrides["tag_class"]
@@ -1687,12 +2376,19 @@ class ClientWindow(QMainWindow):
     def _create_collect_task(self, environment, overrides=None):
         active_status = self._environment_command_status(environment["code"])
         if active_status in {"PENDING", "RUNNING"}:
-            QMessageBox.information(
-                self,
-                "Task Running",
-                f"Environment {environment['code']} already has a collection task. Status: {active_status}.\nPause or cancel it first.",
-            )
-            return
+            if self._running_environment_pids(environment["code"]):
+                QMessageBox.information(
+                    self,
+                    "任务运行中",
+                    f"环境 {environment['code']} 当前已有采集任务，状态：{active_status}。\n请先关闭环境。",
+                )
+                return
+            command_path = self._environment_command_path(environment["code"])
+            try:
+                if command_path.exists():
+                    command_path.unlink()
+            except OSError:
+                pass
 
         settings = self._current_task_settings()
         if overrides:
@@ -1702,13 +2398,13 @@ class ClientWindow(QMainWindow):
         task_mode = settings["task_mode"]
         tag_class_name = settings["tag_class"]
         tag_class = self._tag_class_by_name(tag_class_name)
-        hashtags = list(tag_class.get("tags", []))
-        block_tags = list(tag_class.get("blocked_tags", []))
+        hashtags = list(tag_class.get("tags", [])) if task_mode == TASK_MODE_HASHTAG else []
+        block_tags = list(tag_class.get("blocked_tags", [])) if task_mode == TASK_MODE_HASHTAG else []
         if task_mode == TASK_MODE_HASHTAG and not hashtags:
             QMessageBox.warning(
                 self,
-                "Empty Tag Class",
-                f"Hashtag collection requires at least one tag in class {tag_class_name}.",
+                "标签类为空",
+                f"标签模式需要先在“标签分类”里给 {tag_class_name} 添加至少一个标签。",
             )
             return
 
@@ -1731,6 +2427,9 @@ class ClientWindow(QMainWindow):
             "skip_zero_comment_video": bool(settings["skip_zero_comment_video"]),
             "ai_video_filter_enabled": bool(settings["ai_video_filter_enabled"]),
             "ai_user_filter_enabled": bool(settings["ai_user_filter_enabled"]),
+            "watch_seconds_min": int(settings.get("watch_seconds_min", 4)),
+            "watch_seconds_max": int(settings.get("watch_seconds_max", 10)),
+            "target_filters": dict(settings.get("target_filters", {})),
             "created_at": now,
             "updated_at": now,
         }
@@ -1738,21 +2437,21 @@ class ClientWindow(QMainWindow):
         self._save_tasks()
         command_path = self._write_environment_command(environment, task)
         self._sync_summary_stats()
-        max_videos = "continuous"
-        max_comments = "full comments"
+        max_videos = "持续采集"
+        max_comments = "全量评论"
         self._append_log(
             (
-                f"Collection task queued: {task_code} / environment {environment['code']} / "
-                f"{TASK_MODE_LABELS.get(task_mode, task_mode)} / tag class {tag_class_name} / "
-                f"videos {max_videos} / comments {max_comments}"
+                f"已下发采集任务：{task_code} / 环境 {environment['code']} / "
+                f"{TASK_MODE_LABELS.get(task_mode, task_mode)} / 标签类 {tag_class_name} / "
+                f"视频 {max_videos} / 评论 {max_comments}"
             )
         )
 
         if not self._running_environment_pids(environment["code"]):
-            self._append_log(f"Environment {environment['code']} is not running; opening it first")
+            self._append_log(f"环境 {environment['code']} 未运行，正在启动")
             self._open_environment(environment)
         else:
-            self._append_log(f"Task command written: {command_path}")
+            self._append_log(f"任务命令已写入：{command_path}")
 
     def _read_int_config(self, key, default, minimum=0, maximum=100000):
         widget = self.config_inputs.get(key)
@@ -1773,6 +2472,68 @@ class ClientWindow(QMainWindow):
     @staticmethod
     def _parse_tags(text):
         return parse_tags(text)
+
+    @staticmethod
+    def _parse_regions(text):
+        regions = []
+        for raw_region in str(text or "").replace("，", ",").replace(" ", ",").split(","):
+            region = raw_region.strip().upper()
+            if region and region not in regions:
+                regions.append(region)
+        return regions
+
+    def _toggle_environment(self, environment):
+        if self._running_environment_pids(environment["code"]):
+            command_status = self._environment_command_status(environment["code"])
+            command_status_u = str(command_status or "").upper()
+            if command_status_u in {"PENDING", "RUNNING"}:
+                self._request_pause_environment_task(environment)
+                return
+            if command_status_u == "PAUSE_REQUESTED":
+                self._append_log(
+                    f"环境 {environment['code']} 正在暂停：等待候选筛选完成后自动关闭"
+                )
+                QMessageBox.information(
+                    self,
+                    "暂停中",
+                    "环境已收到暂停请求。\n当前不会再采集新视频，正在等待已采集候选筛选完成后自动关闭。",
+                )
+                return
+            self._close_environment(environment)
+            return
+        self._show_task_config_dialog(environment)
+
+    def _close_environment(self, environment):
+        environment_code = self._normalize_environment_code(environment.get("code", ""))
+        running_pids = self._running_environment_pids(environment_code)
+        stopped_pids = []
+        for pid in running_pids:
+            if self._terminate_process_tree(pid):
+                stopped_pids.append(pid)
+
+        self._remove_environment_runtime_markers(environment_code)
+        command_path = self._environment_command_path(environment_code)
+        try:
+            if command_path.exists():
+                command_path.unlink()
+        except OSError:
+            pass
+
+        fallback_status = (
+            ENV_STATUS_LOGIN_REQUIRED
+            if environment.get("account", "-") != "-"
+            else ENV_STATUS_NEW
+        )
+        environment["status"] = fallback_status
+        environment["login"] = self._status_label(fallback_status)
+        environment["last_open_pid"] = ""
+        environment["updated_at"] = self._now_iso()
+        self._save_environments()
+        self._render_environment_rows()
+        self._append_log(
+            f"环境 {environment_code} 已关闭"
+            + (f"，进程：{', '.join(map(str, stopped_pids))}" if stopped_pids else "")
+        )
 
     def _refresh_environment_statuses(self, silent=False):
         changed = False
@@ -1803,7 +2564,7 @@ class ClientWindow(QMainWindow):
             orphan_pids = self._cleanup_orphan_environment_processes(environment["code"])
             if orphan_pids and not silent:
                 self._append_log(
-                    f"Environment {environment['code']} cleaned orphan processes: {', '.join(map(str, orphan_pids))}"
+                    f"环境 {environment['code']} 已清理残留进程：{', '.join(map(str, orphan_pids))}"
                 )
 
             pid = environment.get("last_open_pid")
@@ -1822,7 +2583,7 @@ class ClientWindow(QMainWindow):
                     command_cleanup_changed = True
                     if not silent:
                         self._append_log(
-                            f"Environment {environment['code']} has no running process; task status moved to PAUSED"
+                            f"环境 {environment['code']} 没有运行进程，任务状态已切换为已暂停"
                         )
                 else:
                     self.command_status_cache.pop(environment["code"], None)
@@ -1842,7 +2603,7 @@ class ClientWindow(QMainWindow):
                 environment["updated_at"] = self._now_iso()
                 changed = True
                 if not silent and pid:
-                    self._append_log(f"Environment {environment['code']} process disappeared, status downgraded")
+                    self._append_log(f"环境 {environment['code']} 进程已退出，状态已刷新")
 
         if changed:
             self._save_environments()
@@ -1852,12 +2613,12 @@ class ClientWindow(QMainWindow):
 
         self._sync_summary_stats()
         if not silent:
-            self._append_log("Environment status refreshed")
+            self._append_log("环境状态已刷新")
 
     def _show_add_proxy_node_dialog(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle("Add Proxy Node")
-        dialog.setMinimumWidth(420)
+        dialog.setWindowTitle("添加代理服务器")
+        dialog.setMinimumWidth(560)
 
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
@@ -1866,11 +2627,15 @@ class ClientWindow(QMainWindow):
 
         node_input = QLineEdit()
         node_input.setObjectName("Input")
-        node_input.setPlaceholderText("Example: Proxy-5 or a backend configured node name")
-        form.addRow("Node Name", node_input)
+        node_input.setPlaceholderText("例如：http://45.123.102.122:44001:用户名:密码")
+        form.addRow("代理服务器", node_input)
         layout.addLayout(form)
 
-        hint = QLabel("This stores the node name locally. Real proxy parameters can be provided by manual proxy input or backend configuration.")
+        hint = QLabel(
+            "支持格式：host:port:user:pass、http://host:port:user:pass、"
+            "http://user:pass@host:port、socks5://host:port:user:pass。"
+            "保存后环境启动时由 Playwright 直接连接代理服务器。"
+        )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1879,6 +2644,8 @@ class ClientWindow(QMainWindow):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("保存")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -1896,14 +2663,14 @@ class ClientWindow(QMainWindow):
             self.proxy_port_map = self._build_proxy_port_map(self.proxy_nodes)
             self._save_local_proxy_nodes()
             self._render_environment_rows()
-            self._append_log(f"Proxy node added: {node_name}")
+            self._append_log(f"代理服务器已添加：{self._proxy_display_text(node_name)}")
         else:
-            self._append_log(f"Proxy node already exists: {node_name}")
+            self._append_log(f"代理服务器已存在：{self._proxy_display_text(node_name)}")
 
     def _show_create_environment_dialog(self):
         code = self._next_environment_code()
         dialog = QDialog(self)
-        dialog.setWindowTitle("Create Environment")
+        dialog.setWindowTitle("创建环境")
         dialog.setMinimumWidth(420)
 
         layout = QVBoxLayout(dialog)
@@ -1917,34 +2684,95 @@ class ClientWindow(QMainWindow):
         proxy_input = QComboBox()
         proxy_input.setObjectName("ProxyCombo")
         proxy_input.addItems(self.proxy_nodes)
-        proxy_input.setCurrentText(self._next_available_proxy_node())
+        proxy_input.setVisible(False)
 
-        port_input = QSpinBox()
-        port_input.setRange(1024, 65535)
-        port_input.setValue(self._next_environment_port())
-        port_input.setObjectName("Input")
-        port_input.setEnabled(False)
+        selected_proxy = {"value": self._preferred_proxy_node()}
+        proxy_input.setCurrentText(selected_proxy["value"])
+        proxy_card = QFrame()
+        proxy_card.setObjectName("ProxySelectCard")
+        proxy_layout = QHBoxLayout(proxy_card)
+        proxy_layout.setContentsMargins(14, 10, 10, 10)
+        proxy_layout.setSpacing(10)
+        proxy_text_box = QVBoxLayout()
+        proxy_text_box.setSpacing(2)
+        proxy_value_label = QLabel("")
+        proxy_value_label.setObjectName("ProxySelectValue")
+        proxy_value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        proxy_hint_label = QLabel("")
+        proxy_hint_label.setObjectName("ProxySelectHint")
+        proxy_text_box.addWidget(proxy_value_label)
+        proxy_text_box.addWidget(proxy_hint_label)
+        proxy_button = QPushButton("选择节点")
+        proxy_button.setObjectName("ProxySelectButton")
+        proxy_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        proxy_button.setFixedHeight(34)
+        proxy_button.setMinimumWidth(96)
+        proxy_layout.addLayout(proxy_text_box, 1)
+        proxy_layout.addWidget(proxy_button)
+
+        def proxy_hint(node: str) -> str:
+            normalized = str(node or "").strip()
+            usage_count = self._proxy_usage_count(normalized)
+            reuse_text = (
+                f"当前已分配 {usage_count} 个环境，可继续复用。"
+                if usage_count > 0
+                else "当前未被环境使用。"
+            )
+            if normalized.upper() == "DIRECT":
+                return f"不使用代理，直接使用本机网络。{reuse_text}"
+            if normalized.startswith("socks5://"):
+                return f"SOCKS5 代理服务器，启动浏览器时直连。{reuse_text}"
+            return f"HTTP 代理服务器，启动浏览器时直连。{reuse_text}"
+
+        def update_proxy_card(node: str) -> None:
+            node = str(node or "DIRECT").strip() or "DIRECT"
+            selected_proxy["value"] = node
+            proxy_input.setCurrentText(node)
+            proxy_value_label.setText(self._proxy_display_text(node))
+            proxy_value_label.setToolTip(self._proxy_display_text(node))
+            proxy_hint_label.setText(proxy_hint(node))
+
+        def rebuild_proxy_menu() -> QMenu:
+            menu = QMenu(proxy_button)
+            menu.setObjectName("ProxyNodeMenu")
+            for node in self.proxy_nodes:
+                text = str(node).strip()
+                if not text:
+                    continue
+                action = menu.addAction(self._proxy_choice_text(text))
+                action.triggered.connect(
+                    lambda checked=False, value=text: update_proxy_card(value)
+                )
+            return menu
+
+        proxy_button.clicked.connect(
+            lambda: rebuild_proxy_menu().exec(
+                proxy_button.mapToGlobal(proxy_button.rect().bottomLeft())
+            )
+        )
+        update_proxy_card(selected_proxy["value"])
 
         account_input = QLineEdit()
         account_input.setObjectName("Input")
-        account_input.setPlaceholderText("Optional; bind later if empty")
+        account_input.setPlaceholderText("可留空，后续再绑定")
 
         password_input = QLineEdit()
         password_input.setObjectName("Input")
         password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        password_input.setPlaceholderText("Stored for internal auto-fill login only")
+        password_input.setPlaceholderText("内部保存，用于自动填写登录")
 
-        form.addRow("Environment Name", name_input)
-        form.addRow("Proxy Node", proxy_input)
-        form.addRow("Proxy Port", port_input)
-        form.addRow("TikTok Account", account_input)
-        form.addRow("TikTok Password", password_input)
+        form.addRow("环境名称", name_input)
+        form.addRow("代理节点", proxy_card)
+        form.addRow("TikTok账号", account_input)
+        form.addRow("TikTok密码", password_input)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("创建")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -1953,9 +2781,9 @@ class ClientWindow(QMainWindow):
             return
 
         name = name_input.text().strip() or f"TikTok-MY-{code}"
-        port = int(port_input.value())
+        port = int(self._next_environment_port())
         account = account_input.text().strip() or "-"
-        proxy_node = proxy_input.currentText()
+        proxy_node = selected_proxy["value"]
 
         now = self._now_iso()
         environment = {
@@ -1967,8 +2795,11 @@ class ClientWindow(QMainWindow):
             "tiktok_password": password_input.text(),
             "status": ENV_STATUS_LOGIN_REQUIRED if account != "-" else ENV_STATUS_NEW,
             "task_mode": TASK_MODE_RECOMMEND,
-            "tag_class": self._tag_class_names()[0] if self._tag_class_names() else "Default-A",
+            "tag_class": self._tag_class_names()[0] if self._tag_class_names() else "",
             "profile_dir": self._default_profile_dir(code),
+            "browser_dir": self._default_browser_dir(code),
+            "browser_executable": "",
+            "browser_engine": "Google Chrome 独立实例",
             "created_at": now,
             "updated_at": now,
             "last_open_pid": "",
@@ -1976,6 +2807,7 @@ class ClientWindow(QMainWindow):
         }
         environment["login"] = self._status_label(environment["status"])
         Path(environment["profile_dir"]).mkdir(parents=True, exist_ok=True)
+        Path(environment["browser_dir"]).mkdir(parents=True, exist_ok=True)
         self._write_profile_meta(environment)
 
         local_payload = self._normalize_environment(environment)
@@ -1994,14 +2826,14 @@ class ClientWindow(QMainWindow):
                     "status": local_payload.get("status", ENV_STATUS_NEW),
                     "task_mode": local_payload.get("task_mode", TASK_MODE_RECOMMEND),
                     "tag_class": local_payload.get(
-                        "tag_class", self._tag_class_names()[0] if self._tag_class_names() else "Default-A"
+                        "tag_class", self._tag_class_names()[0] if self._tag_class_names() else ""
                     ),
                 }
                 synced = self.api_client.create_environment(server_payload)
                 remote_env = self._server_environment_to_local(synced) if isinstance(synced, dict) else local_payload
                 environment = remote_env
             except Exception as exc:
-                self._append_log(f"Server environment create failed; keeping local environment: {exc}")
+                self._append_log(f"服务端创建环境失败，已保留本地环境：{exc}")
                 environment = local_payload
         else:
             environment = local_payload
@@ -2009,18 +2841,18 @@ class ClientWindow(QMainWindow):
         self.environments.append(self._normalize_environment(environment))
         self._save_environments()
         self._render_environment_rows()
-        self._append_log(f"Environment created: {code} / {name} / port {port}")
+        self._append_log(f"环境已创建：{code} / {name} / {self._proxy_log_text(proxy_node)}")
 
     @staticmethod
-    def _cell_control_container(control):
+    def _cell_control_container(control, horizontal_margin=None, vertical_margin=None):
         wrapper = QWidget()
         wrapper.setObjectName("CellWidget")
         layout = QHBoxLayout(wrapper)
         layout.setContentsMargins(
-            CELL_HORIZONTAL_MARGIN,
-            CELL_VERTICAL_MARGIN,
-            CELL_HORIZONTAL_MARGIN,
-            CELL_VERTICAL_MARGIN,
+            CELL_HORIZONTAL_MARGIN if horizontal_margin is None else horizontal_margin,
+            CELL_VERTICAL_MARGIN if vertical_margin is None else vertical_margin,
+            CELL_HORIZONTAL_MARGIN if horizontal_margin is None else horizontal_margin,
+            CELL_VERTICAL_MARGIN if vertical_margin is None else vertical_margin,
         )
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2045,15 +2877,31 @@ class ClientWindow(QMainWindow):
         if environment["proxy"] not in proxy_nodes:
             proxy_nodes.insert(0, environment["proxy"])
         combo.blockSignals(True)
-        combo.addItems(proxy_nodes)
-        combo.setCurrentText(environment["proxy"])
+        for node in proxy_nodes:
+            combo.addItem(
+                self._proxy_choice_text(node, exclude_code=environment.get("code")),
+                node,
+            )
+        current_index = combo.findData(environment["proxy"])
+        combo.setCurrentIndex(current_index if current_index >= 0 else 0)
+        usage_count = self._proxy_usage_count(
+            environment["proxy"],
+            exclude_code=environment.get("code"),
+        )
+        combo.setToolTip(
+            f"{self._proxy_display_text(environment['proxy'])}；"
+            f"除当前环境外还有 {usage_count} 个环境使用该代理。"
+        )
         combo.blockSignals(False)
         combo.setFixedHeight(CELL_CONTROL_HEIGHT)
         combo.setMinimumWidth(0)
         combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        combo.currentTextChanged.connect(
-            lambda value, env=environment: self._change_proxy(env, value)
+        combo.currentIndexChanged.connect(
+            lambda _, env=environment, input_widget=combo: self._change_proxy(
+                env,
+                input_widget.currentData(),
+            )
         )
         return combo
 
@@ -2087,10 +2935,11 @@ class ClientWindow(QMainWindow):
         combo = QComboBox()
         combo.setObjectName("ProxyCombo")
         tag_names = self._tag_class_names()
-        if environment.get("tag_class") not in tag_names:
-            tag_names.append(environment.get("tag_class", "Default-A"))
+        current_tag = str(environment.get("tag_class", "")).strip()
+        if current_tag and current_tag not in tag_names:
+            tag_names.append(current_tag)
         combo.addItems(tag_names)
-        combo.setCurrentText(environment.get("tag_class", tag_names[0] if tag_names else "Default-A"))
+        combo.setCurrentText(current_tag or (tag_names[0] if tag_names else ""))
         combo.setFixedHeight(CELL_CONTROL_HEIGHT)
         combo.setMinimumWidth(0)
         combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2103,49 +2952,9 @@ class ClientWindow(QMainWindow):
     def _tag_class_combo_container(self, environment):
         return self._cell_control_container(self._tag_class_combo(environment))
 
-    def _sync_proxy_nodes_from_clash(self):
-        try:
-            snapshot = ClashApiClient().get_proxy_snapshot()
-        except Exception as exc:
-            self._append_log(f"Proxy sync failed: {exc}")
-            QMessageBox.warning(
-                self,
-                "Proxy Sync Failed",
-                (
-                    "Cannot access Clash Verge REST API.\n\n"
-                    "Default URL: http://127.0.0.1:9097\n"
-                    "Default Secret: set-your-secret\n\n"
-                    f"Error: {exc}"
-                ),
-            )
-            return
-
-        proxy_nodes = list(snapshot.nodes)
-        proxy_nodes.extend(self._load_local_proxy_nodes())
-        for environment in self.environments:
-            current_proxy = environment.get("proxy", "")
-            if current_proxy and current_proxy not in proxy_nodes:
-                proxy_nodes.append(current_proxy)
-
-        if not proxy_nodes:
-            self._append_log("Proxy sync failed: Clash API returned no usable nodes")
-            return
-
-        self.proxy_nodes = self._dedupe_nodes(proxy_nodes)
-        self.proxy_port_map = self._build_proxy_port_map(self.proxy_nodes)
-        ports_changed = self._sync_environment_ports_with_nodes()
-        self._save_local_proxy_nodes()
-        self._render_environment_rows()
-        group_text = f", groups {len(snapshot.groups)}" if snapshot.groups else ""
-        current_text = f", current GLOBAL={snapshot.current}" if snapshot.current else ""
-        port_text = ", environment ports synced by node" if ports_changed else ""
-        self._append_log(
-            f"Proxy sync succeeded: {len(self.proxy_nodes)} nodes{group_text}{current_text}{port_text}"
-        )
-
     def _account_button_container(self, environment):
         account = environment.get("account", "-")
-        button_text = account if account != "-" else "Bind Account"
+        button_text = account if account != "-" else "绑定账号"
         button = QPushButton(button_text)
         button.setObjectName("TableAccount")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2159,102 +2968,32 @@ class ClientWindow(QMainWindow):
 
     @staticmethod
     def _profile_meta_path(environment):
-        profile_dir = Path(environment.get("profile_dir", ""))
-        return profile_dir / PROFILE_META_FILENAME
+        return ProfileStateService.meta_path(environment)
 
     @staticmethod
     def _profile_has_browser_data(profile_dir):
-        profile_dir = Path(profile_dir)
-        if not profile_dir.exists():
-            return False
-
-        try:
-            entries = list(profile_dir.iterdir())
-        except OSError:
-            return False
-
-        return any(entry.name != PROFILE_META_FILENAME for entry in entries)
+        return ProfileStateService.has_browser_data(profile_dir)
 
     def _read_profile_meta(self, environment):
-        meta_path = self._profile_meta_path(environment)
-        payload = read_json_file(meta_path, {})
-        return payload if isinstance(payload, dict) else {}
+        return self._profile_state_service().read_meta(environment)
 
     def _write_profile_meta(self, environment):
-        profile_dir = Path(environment.get("profile_dir", ""))
-        if not profile_dir:
-            return
-
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": 1,
-            "environment_code": environment.get("code", ""),
-            "environment_name": environment.get("name", ""),
-            "account": environment.get("account", "-"),
-            "proxy": environment.get("proxy", ""),
-            "port": environment.get("port", ""),
-            "updated_at": self._now_iso(),
-        }
-        write_json_file(self._profile_meta_path(environment), payload)
+        self._profile_state_service().write_meta(environment)
 
     def _ensure_profile_matches_account(self, environment):
-        account = str(environment.get("account", "-")).strip() or "-"
-        profile_dir = Path(environment.get("profile_dir", ""))
-        profile_dir.mkdir(parents=True, exist_ok=True)
-
-        if account == "-":
-            self._write_profile_meta(environment)
-            return
-
-        meta = self._read_profile_meta(environment)
-        meta_account = str(meta.get("account", "")).strip()
-        needs_reset = False
-        reason = ""
-
-        if meta_account and meta_account not in {"-", account}:
-            needs_reset = True
-            reason = f"profile account {meta_account} differs from current account {account}"
-        elif not meta_account and self._profile_has_browser_data(profile_dir):
-            self._append_log(
-                f"Environment {environment['code']} has existing browser data; writing account marker and keeping login state"
-            )
-
-        if needs_reset:
-            backup_path = self._reset_environment_profile(environment)
-            if backup_path:
-                self._append_log(
-                    f"Environment {environment['code']} profile reset: {reason}; backup: {backup_path}"
-                )
-            else:
-                self._append_log(
-                    f"Environment {environment['code']} profile reset needed but backup failed: {reason}"
-                )
-
-        self._write_profile_meta(environment)
+        for message in self._profile_state_service().ensure_matches_account(environment):
+            self._append_log(message)
 
     def _reset_environment_profile(self, environment):
-        profile_dir = Path(environment.get("profile_dir", ""))
-        if not profile_dir.exists():
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            return None
-
-        backup_root = ROOT_DIR / "runtime" / "profile_backups"
-        backup_root.mkdir(parents=True, exist_ok=True)
-        backup_name = f"{environment['code']}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        backup_path = backup_root / backup_name
-
         try:
-            shutil.move(str(profile_dir), str(backup_path))
+            return self._profile_state_service().reset_profile(environment)
         except OSError as exc:
-            self._append_log(f"Environment {environment['code']} profile backup failed: {exc}")
+            self._append_log(f"环境 {environment['code']} 浏览器资料备份失败：{exc}")
             return None
-
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        return backup_path
 
     def _show_bind_account_dialog(self, environment):
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Bind TikTok Account - Environment {environment['code']}")
+        dialog.setWindowTitle(f"绑定 TikTok 账号 - 环境 {environment['code']}")
         dialog.setMinimumWidth(420)
 
         layout = QVBoxLayout(dialog)
@@ -2266,39 +3005,18 @@ class ClientWindow(QMainWindow):
             "" if environment.get("account", "-") == "-" else environment.get("account", "")
         )
         account_input.setObjectName("Input")
-        account_input.setPlaceholderText("TikTok login account")
+        account_input.setPlaceholderText("TikTok 登录账号")
 
         password_input = QLineEdit(environment.get("tiktok_password", ""))
         password_input.setObjectName("Input")
         password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        password_input.setPlaceholderText("Stored for internal auto-fill login only")
+        password_input.setPlaceholderText("内部保存，用于自动填写登录表单")
 
-        status_input = QComboBox()
-        status_input.setObjectName("ProxyCombo")
-        status_options = [
-            ("Unbound", ENV_STATUS_NEW),
-            ("Login Required", ENV_STATUS_LOGIN_REQUIRED),
-            ("Ready", ENV_STATUS_READY),
-        ]
-        for label, value in status_options:
-            status_input.addItem(label, value)
-        current_status = environment.get("status", ENV_STATUS_NEW)
-        status_index = next(
-            (
-                index
-                for index, (_, value) in enumerate(status_options)
-                if value == current_status
-            ),
-            0,
-        )
-        status_input.setCurrentIndex(status_index)
-
-        reset_profile_input = QCheckBox("Reset browser profile and clear old login state for this environment")
+        reset_profile_input = QCheckBox("重建浏览器资料，清空该环境旧登录状态")
         reset_profile_input.setObjectName("CheckBox")
 
-        form.addRow("TikTok Account", account_input)
-        form.addRow("TikTok Password", password_input)
-        form.addRow("Login Status", status_input)
+        form.addRow("TikTok账号", account_input)
+        form.addRow("TikTok密码", password_input)
         form.addRow("", reset_profile_input)
         layout.addLayout(form)
 
@@ -2306,6 +3024,8 @@ class ClientWindow(QMainWindow):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("保存")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -2314,11 +3034,7 @@ class ClientWindow(QMainWindow):
             return
 
         account = account_input.text().strip() or "-"
-        status = status_input.currentData()
-        if account == "-":
-            status = ENV_STATUS_NEW
-        elif status == ENV_STATUS_NEW:
-            status = ENV_STATUS_LOGIN_REQUIRED
+        status = ENV_STATUS_LOGIN_REQUIRED if account != "-" else ENV_STATUS_NEW
 
         old_account = environment.get("account", "-")
         account_changed = old_account != account and account != "-"
@@ -2327,8 +3043,8 @@ class ClientWindow(QMainWindow):
         if reset_profile and self._running_environment_pids(environment["code"]):
             QMessageBox.warning(
                 self,
-                "Environment Running",
-                "Close this environment before resetting its browser profile. The profile directory cannot be safely rebuilt while Chromium is running.",
+                "环境正在运行",
+                "请先关闭该环境，再重建浏览器资料。运行中无法安全重建资料目录。",
             )
             return
 
@@ -2344,10 +3060,10 @@ class ClientWindow(QMainWindow):
         self._render_environment_rows()
         if backup_path:
             self._append_log(
-                f"Environment {environment['code']} TikTok account updated; old browser profile backed up: {backup_path}"
+                f"环境 {environment['code']} TikTok 账号已更新，旧浏览器资料已备份：{backup_path}"
             )
         else:
-            self._append_log(f"Environment {environment['code']} TikTok account updated")
+            self._append_log(f"环境 {environment['code']} TikTok 账号已更新")
 
     def _sync_environment_table_height(self):
         table = self.environment_table
@@ -2355,13 +3071,19 @@ class ClientWindow(QMainWindow):
         if table is None:
             return
 
-        visible_rows = min(max(len(self.environments), 1), ENV_MAX_VISIBLE_ROWS)
+        visible_rows = min(
+            max(len(self.environments), ENV_MIN_VISIBLE_ROWS),
+            ENV_MAX_VISIBLE_ROWS,
+        )
         table.horizontalHeader().setFixedHeight(self.header_height)
         row_table_height = self.header_height + (self.row_height * visible_rows) + 4
         scrollbar_height = table.horizontalScrollBar().sizeHint().height() + 8
-        table_height = max(
-            row_table_height + scrollbar_height,
-            self._scaled(330, minimum=300, maximum=410),
+        table_height = min(
+            max(
+                row_table_height + scrollbar_height,
+                self._scaled(280, minimum=252, maximum=310),
+            ),
+            self._scaled(480, minimum=390, maximum=520),
         )
         table.setFixedHeight(table_height)
 
@@ -2384,17 +3106,15 @@ class ClientWindow(QMainWindow):
 
         if viewport_width > total_width:
             extra_width = viewport_width - total_width
-            name_extra = int(extra_width * 0.30)
-            proxy_extra = int(extra_width * 0.18)
-            account_extra = int(extra_width * 0.34)
+            name_extra = int(extra_width * 0.34)
+            proxy_extra = int(extra_width * 0.24)
+            account_extra = extra_width - name_extra - proxy_extra
             base_widths[1] += name_extra
             base_widths[2] += proxy_extra
             base_widths[3] += account_extra
-            base_widths[5] += int(extra_width * 0.09)
-            base_widths[6] += extra_width - name_extra - proxy_extra - account_extra - int(extra_width * 0.09)
         elif viewport_width < total_width:
             overflow = total_width - viewport_width
-            shrink_columns = [3, 1, 2, 6, 5, 7, 4, 0]
+            shrink_columns = [3, 1, 2, 6, 5, 4, 0]
             for column in shrink_columns:
                 if overflow <= 0:
                     break
@@ -2453,8 +3173,8 @@ class ClientWindow(QMainWindow):
         if self.overview_panel is not None:
             self.overview_panel.setFixedHeight(self._scaled(86, minimum=72))
 
-        if self.settings_panel is not None:
-            self.settings_panel.setFixedWidth(self._scaled(250, minimum=226))
+        if self.log_panel is not None:
+            self.log_panel.setFixedHeight(self._scaled(166, minimum=128, maximum=210))
 
         self.row_height = self._scaled(ENV_ROW_HEIGHT, minimum=ENV_ROW_HEIGHT)
         self.header_height = self._scaled(46, minimum=40)
@@ -2518,7 +3238,7 @@ QWidget {{
         editor.setText(normalized_name)
         environment["updated_at"] = self._now_iso()
         self._save_environments()
-        self._append_log(f"Environment {environment['code']} name updated: {normalized_name}")
+        self._append_log(f"环境 {environment['code']} 名称已更新：{normalized_name}")
 
     def _change_task_mode(self, environment, mode):
         mode = str(mode or TASK_MODE_RECOMMEND)
@@ -2528,33 +3248,32 @@ QWidget {{
         environment["updated_at"] = self._now_iso()
         self._save_environments()
         self._append_log(
-            f"Environment {environment['code']} task mode updated: {TASK_MODE_LABELS[mode]}"
+            f"环境 {environment['code']} 任务模式已更新：{TASK_MODE_LABELS[mode]}"
         )
 
     def _change_tag_class(self, environment, tag_class_name):
-        tag_class_name = str(tag_class_name).strip() or self._tag_class_names()[0]
+        tag_class_name = str(tag_class_name).strip()
+        if not tag_class_name:
+            environment["tag_class"] = ""
+            environment["updated_at"] = self._now_iso()
+            self._save_environments()
+            self._append_log(f"环境 {environment['code']} 标签类已清空")
+            return
         environment["tag_class"] = tag_class_name
         environment["updated_at"] = self._now_iso()
         self._save_environments()
-        self._append_log(f"Environment {environment['code']} tag class updated: {tag_class_name}")
+        self._append_log(f"环境 {environment['code']} 标签类已更新：{tag_class_name}")
 
     @staticmethod
     def _table_button_container(text, object_name, handler):
         button = QPushButton(text)
         button.setObjectName(object_name)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        if text == "Start":
-            button_width = 56
-        elif text == "Open":
-            button_width = 56
-        else:
-            button_width = 56
-
-        button.setMinimumWidth(max(ACTION_BUTTON_MIN_WIDTH, button_width))
+        button.setMinimumWidth(ACTION_BUTTON_MIN_WIDTH)
         button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         button.setFixedHeight(CELL_CONTROL_HEIGHT)
         button.clicked.connect(handler)
-        return ClientWindow._cell_control_container(button)
+        return ClientWindow._cell_control_container(button, horizontal_margin=8, vertical_margin=7)
 
     @staticmethod
     def _apply_shadow(widget, blur=18, x=0, y=7, color="#d8e2f0"):
@@ -2577,18 +3296,18 @@ QWidget {{
         self._render_environment_rows()
         if old_port != int(new_port):
             self._append_log(
-                f"Environment {environment['code']} proxy selected: {proxy_node}; port corrected to {new_port}"
+                f"环境 {environment['code']} 已选择{self._proxy_log_text(proxy_node)}"
             )
         else:
             self._append_log(
-                f"Environment {environment['code']} proxy selected: {proxy_node}; port remains {new_port}"
+                f"环境 {environment['code']} 已选择{self._proxy_log_text(proxy_node)}"
             )
 
     def _delete_environment(self, environment):
         answer = QMessageBox.question(
             self,
-            "Delete Environment",
-            f"Delete environment {environment['code']} / {environment['name']}?\nThis removes the environment record only and keeps the browser profile directory.",
+            "删除环境",
+            f"确认删除环境 {environment['code']} / {environment['name']}？\n当前只删除环境记录，浏览器资料目录会保留。",
         )
 
         if answer != QMessageBox.StandardButton.Yes:
@@ -2602,7 +3321,7 @@ QWidget {{
                     owner_username=self._current_username() if self._current_username() != "local" else "",
                 )
             except Exception as exc:
-                self._append_log(f"Server environment delete failed; continuing local cleanup: {exc}")
+                self._append_log(f"服务端删除环境失败，继续清理本地记录：{exc}")
 
         running_pids = self._running_environment_pids(environment["code"])
         for pid in running_pids:
@@ -2624,68 +3343,22 @@ QWidget {{
         self._save_environments()
         self._render_environment_rows()
 
-        self._append_log(f"Environment deleted: {environment['code']}")
-
-    def _settings_panel(self):
-        panel = QFrame()
-        panel.setObjectName("SettingsPanel")
-        panel.setFixedWidth(250)
-        self._apply_shadow(panel, blur=18, y=7)
-        self.settings_panel = panel
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(16, 18, 16, 18)
-        layout.setSpacing(10)
-
-        title = QLabel("Window Settings")
-        title.setObjectName("PanelTitle")
-        layout.addWidget(title)
-
-        form = QGridLayout()
-        form.setHorizontalSpacing(8)
-        form.setVerticalSpacing(8)
-        form.setColumnStretch(0, 0)
-        form.setColumnStretch(1, 1)
-
-        fields = [
-            ("viewport_width", "Viewport Width", str(MAIN_VIEWPORT_WIDTH)),
-            ("viewport_height", "Viewport Height", str(MAIN_VIEWPORT_HEIGHT)),
-        ]
-
-        for row, (key, label_text, value) in enumerate(fields):
-            label = QLabel(label_text)
-            label.setObjectName("FieldLabel")
-            edit = QLineEdit(value)
-            edit.setObjectName("Input")
-            edit.setFixedHeight(32)
-            self.config_inputs[key] = edit
-            form.addWidget(label, row, 0)
-            form.addWidget(edit, row, 1)
-
-        layout.addLayout(form)
-
-        save = QPushButton("Save Window Config")
-        save.setObjectName("PrimaryButton")
-        save.setFixedHeight(40)
-        save.clicked.connect(self._save_window_config)
-        layout.addWidget(save)
-        layout.addStretch(1)
-
-        hint = QLabel("Task mode, tag classes, AI switches, and render wait are maintained in the Collection Tasks and Tag Classes pages.")
-        hint.setObjectName("Hint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        return panel
+        self._append_log(f"环境已删除：{environment['code']}")
 
     def _log_panel(self):
         log = QTextEdit()
         log.setObjectName("LogPanel")
         self._apply_shadow(log, blur=14, y=5)
         log.setReadOnly(True)
-        log.setMinimumHeight(108)
+        log.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        log.setMinimumHeight(118)
+        log.setMaximumHeight(210)
+        log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         log.setText(
-            "[INFO] Client loaded\n"
-            "[INFO] Local runtime mode is active\n"
-            "[INFO] Click Open to launch an isolated Playwright Chromium environment"
+            "[INFO] 客户端已加载\n"
+            "[INFO] 当前使用本地运行模式\n"
+            "[INFO] 点击“启动”会先填写任务需求，再启动独立 Playwright Chromium 环境"
         )
         return log
 
@@ -2695,6 +3368,12 @@ QWidget {{
             environment.get(
                 "profile_dir",
                 ROOT_DIR / "runtime" / "profiles" / f"env_{environment_code}",
+            )
+        )
+        browser_dir = Path(
+            environment.get(
+                "browser_dir",
+                self._default_browser_dir(environment_code),
             )
         )
 
@@ -2707,14 +3386,14 @@ QWidget {{
             self._save_environments()
             self._render_environment_rows()
             self._append_log(
-                f"Environment {environment_code} is already running, PID={running_pids[-1]}"
+                f"环境 {environment_code} 已在运行，PID={running_pids[-1]}"
             )
             QMessageBox.information(
                 self,
-                "Environment Running",
+                "环境正在运行",
                 (
-                    f"Environment {environment_code} is already open.\n"
-                    "To avoid profile/session mixing, it will not be started again."
+                    f"环境 {environment_code} 已经打开。\n"
+                    "为避免资料和登录状态串号，不会重复启动。"
                 ),
             )
             return
@@ -2722,7 +3401,7 @@ QWidget {{
         orphan_pids = self._cleanup_orphan_environment_processes(environment_code)
         if orphan_pids:
             self._append_log(
-                f"Environment {environment_code} cleaned orphan processes: {', '.join(map(str, orphan_pids))}"
+                f"环境 {environment_code} 已清理残留进程：{', '.join(map(str, orphan_pids))}"
             )
 
         render_wait = self._read_int_config("render_wait", default=30, minimum=5, maximum=300)
@@ -2735,11 +3414,11 @@ QWidget {{
 
         if has_credentials:
             self._append_log(
-                f"Environment {environment_code} has credentials; login fill will wait {render_wait}s"
+                f"环境 {environment_code} 已绑定账号，登录填写会等待 {render_wait} 秒"
             )
         else:
             self._append_log(
-                f"Environment {environment_code} has no complete credentials; opening TikTok only"
+                f"环境 {environment_code} 未完整绑定账号，只打开 TikTok 页面"
             )
 
         request = EnvironmentLaunchRequest(
@@ -2748,6 +3427,8 @@ QWidget {{
             port=int(environment["port"]),
             proxy_node=environment["proxy"],
             profile_dir=profile_dir,
+            browser_dir=browser_dir,
+            browser_executable=str(environment.get("browser_executable", "")),
             render_wait_seconds=render_wait,
             env_state_file=self.env_state_file,
             env_lock_dir=self.env_lock_dir,
@@ -2759,7 +3440,7 @@ QWidget {{
         try:
             result = self._environment_launcher().launch(request)
             process = result.process
-            self._append_log(f"Proxy check: {result.proxy_note}")
+            self._append_log(f"代理检查：{self._proxy_connection_note(result.proxy_note)}")
             self.browser_processes.append(process)
             environment["status"] = ENV_STATUS_RUNNING
             environment["login"] = self._status_label(ENV_STATUS_RUNNING)
@@ -2769,18 +3450,18 @@ QWidget {{
             self._save_environments()
             self._render_environment_rows()
             self._append_log(
-                f"Opened environment {environment_code} on port {environment['port']}, PID={process.pid}"
+                f"已启动环境 {environment_code}，PID={process.pid}，确认运行正常后可手动最小化浏览器"
             )
         except EnvironmentLaunchError as exc:
-            self._append_log(f"Environment {environment_code} launch check failed: {exc}")
-            QMessageBox.warning(self, "Launch Failed", str(exc))
+            self._append_log(f"环境 {environment_code} 启动检查失败：{exc}")
+            QMessageBox.warning(self, "启动失败", str(exc))
         except Exception as exc:
             environment["status"] = ENV_STATUS_ERROR
             environment["login"] = self._status_label(ENV_STATUS_ERROR)
             environment["updated_at"] = self._now_iso()
             self._save_environments()
             self._render_environment_rows()
-            QMessageBox.warning(self, "Launch Failed", str(exc))
+            QMessageBox.warning(self, "启动失败", str(exc))
 
     def _environment_process_pids(self, code):
         return self._process_manager().environment_process_pids(code)
@@ -2851,27 +3532,36 @@ QWidget {{
             self._save_environments()
 
         if stopped_pids:
-            self._append_log(f"Closed environment processes: {', '.join(map(str, stopped_pids))}")
+            self._append_log(f"已关闭环境进程：{', '.join(map(str, stopped_pids))}")
 
     def _append_log(self, message):
-        if self.log_panel is None:
+        if getattr(self, "log_panel", None) is None:
+            if hasattr(self, "startup_messages"):
+                self.startup_messages.append(str(message))
             return
 
+        scroll_bar = self.log_panel.verticalScrollBar()
+        old_value = scroll_bar.value()
+        stick_to_bottom = old_value >= scroll_bar.maximum() - 8
         self.log_panel.append(f"[INFO] {message}")
+        if stick_to_bottom:
+            scroll_bar.setValue(scroll_bar.maximum())
+        else:
+            scroll_bar.setValue(min(old_value, scroll_bar.maximum()))
 
     def _save_window_config(self):
         width_input = self.config_inputs.get("viewport_width")
         height_input = self.config_inputs.get("viewport_height")
 
         if self.workspace is None or width_input is None or height_input is None:
-            self._append_log("Config controls are not initialized")
+            self._append_log("配置控件尚未初始化")
             return
 
         try:
             width = int(width_input.text().strip())
             height = int(height_input.text().strip())
         except ValueError:
-            QMessageBox.warning(self, "Config Error", "Viewport width and height must be numbers.")
+            QMessageBox.warning(self, "配置错误", "窗口宽度和高度必须是数字。")
             return
 
         width = max(self.minimumWidth(), min(2400, width))
@@ -2882,7 +3572,7 @@ QWidget {{
         self.resize(width, height)
         self._apply_adaptive_layout()
 
-        self._append_log(f"Window config saved: viewport {width}x{height}")
+        self._append_log(f"窗口配置已保存：{width}x{height}")
 
 
 

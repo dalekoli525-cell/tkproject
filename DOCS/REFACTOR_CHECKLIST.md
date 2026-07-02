@@ -4,7 +4,7 @@
 
 - [x] Move legacy ADS/CRM code out of the new runtime path.
 - [x] Create `APP/SHARED`, `APP/SERVER`, `APP/WORKER`, and `APP/CLIENT`.
-- [x] Add Clash multi-port config generator.
+- [x] Add Playwright direct proxy parsing.
 - [x] Add Playwright persistent environment manager.
 - [x] Add Dockerfiles and k3s baseline manifests.
 - [x] Add database models for proxy environments and tasks.
@@ -18,7 +18,7 @@
 ## Phase 2 - Browser Environment
 
 - [ ] Create proxy browser environment.
-- [ ] Bind environment to Clash proxy node and local port.
+- [ ] Bind environment to a direct proxy server node.
 - [ ] Store TikTok username/password.
 - [ ] Open browser and preserve login state.
 - [ ] Detect TikTok login status.

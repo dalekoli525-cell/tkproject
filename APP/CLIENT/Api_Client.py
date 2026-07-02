@@ -190,3 +190,14 @@ class ClientApi:
             },
         ).json()
         return payload if isinstance(payload, list) else []
+
+    def list_comment_candidates(self, limit: int = 300, tiktok_id: str = "") -> list[dict]:
+        payload = self._request(
+            "GET",
+            "/collection/comment-candidates",
+            params={
+                "limit": limit,
+                "tiktok_id": tiktok_id,
+            },
+        ).json()
+        return payload if isinstance(payload, list) else []

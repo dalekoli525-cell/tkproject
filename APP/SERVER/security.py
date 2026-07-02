@@ -209,27 +209,27 @@ def require_current_user(
     credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(bearer_scheme)],
 ) -> dict:
     if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="authorization token required")
+        raise HTTPException(status_code=401, detail="需要登录令牌。")
 
     session = _find_session(credentials.credentials)
     if session is None:
-        raise HTTPException(status_code=401, detail="invalid or expired token")
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录。")
 
     user = _find_user(str(session.get("username", "")))
     if not user or not user.get("is_active", True):
-        raise HTTPException(status_code=401, detail="user is disabled")
+        raise HTTPException(status_code=401, detail="账号已被停用。")
     return user
 
 
 def require_admin(user: Annotated[dict, Depends(require_current_user)]) -> dict:
     if str(user.get("role", "")).lower() != "admin":
-        raise HTTPException(status_code=403, detail="admin role required")
+        raise HTTPException(status_code=403, detail="需要管理员权限。")
     return user
 
 
 def create_invite_code(code: str, role: str, uses_remaining: int, is_active: bool = True) -> dict:
     if len(code) != 6 or not code.isdigit():
-        raise ValueError("invite code must be 6 digits")
+        raise ValueError("邀请码必须是 6 位数字")
 
     payload = load_invites()
     rows = [

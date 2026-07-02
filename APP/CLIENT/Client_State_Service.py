@@ -35,16 +35,19 @@ class ClientStateService:
         self.now_func = now_func
         self.env_state_file = self.state_dir / "environments.json"
         self.task_state_file = self.state_dir / "collect_tasks.json"
+        self.task_defaults_file = self.state_dir / "task_defaults.json"
         self.tag_class_state_file = self.state_dir / "tag_classes.json"
         self.proxy_node_state_file = self.state_dir / "proxy_nodes.json"
         self.env_lock_dir = self.state_dir / "environment_locks"
         self.env_command_dir = self.state_dir / "environment_commands"
         self.profile_dir = self.state_dir / "profiles"
+        self.browser_instance_dir = self.state_dir / "browser_instances"
         self.collector_data_dir = self.state_dir / "collector_data"
 
     def ensure_dirs(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.browser_instance_dir.mkdir(parents=True, exist_ok=True)
         self.collector_data_dir.mkdir(parents=True, exist_ok=True)
         self.env_lock_dir.mkdir(parents=True, exist_ok=True)
         self.env_command_dir.mkdir(parents=True, exist_ok=True)
@@ -52,13 +55,12 @@ class ClientStateService:
     def default_profile_dir(self, code: str) -> str:
         return str(self.profile_dir / f"env_{normalize_environment_code(code)}")
 
+    def default_browser_dir(self, code: str) -> str:
+        return str(self.browser_instance_dir / f"env_{normalize_environment_code(code)}")
+
     @staticmethod
     def default_proxy_nodes() -> list[str]:
         return [
-            "Proxy-1",
-            "Proxy-2",
-            "Proxy-3",
-            "Proxy-4",
             "DIRECT",
         ]
 
@@ -96,18 +98,7 @@ class ClientStateService:
 
     @staticmethod
     def default_tag_classes() -> list[dict]:
-        return [
-            {
-                "name": "Default-A",
-                "tags": ["#malaysia", "#chinese", "#overseas"],
-                "blocked_tags": ["#live"],
-            },
-            {
-                "name": "Default-B",
-                "tags": ["#malaysia", "#mandarin", "#business"],
-                "blocked_tags": ["#live"],
-            },
-        ]
+        return []
 
     @staticmethod
     def normalize_tag_classes(rows) -> list[dict]:
@@ -130,7 +121,7 @@ class ClientStateService:
                     ),
                 }
             )
-        return tag_classes or ClientStateService.default_tag_classes()
+        return tag_classes
 
     def load_tag_classes(self) -> list[dict]:
         if not self.tag_class_state_file.exists():
@@ -166,7 +157,7 @@ class ClientStateService:
             if tag_class.get("name") == name:
                 return tag_class
         return tag_classes[0] if tag_classes else {
-            "name": "Default-A",
+            "name": str(name or ""),
             "tags": [],
             "blocked_tags": [],
         }
@@ -235,11 +226,17 @@ class ClientStateService:
         except (TypeError, ValueError):
             port = self.next_environment_port(existing_environments, exclude_code=code)
 
-        default_tag_class = tag_class_names[0] if tag_class_names else "Default-A"
+        default_tag_class = tag_class_names[0] if tag_class_names else ""
         profile_dir = str(
             environment.get(
                 "profile_dir",
                 self.default_profile_dir(code),
+            )
+        )
+        browser_dir = str(
+            environment.get(
+                "browser_dir",
+                self.default_browser_dir(code),
             )
         )
 
@@ -255,6 +252,9 @@ class ClientStateService:
             "task_mode": str(environment.get("task_mode", TASK_MODE_RECOMMEND)),
             "tag_class": str(environment.get("tag_class", default_tag_class)),
             "profile_dir": profile_dir,
+            "browser_dir": browser_dir,
+            "browser_executable": str(environment.get("browser_executable", "")),
+            "browser_engine": str(environment.get("browser_engine", "Google Chrome 独立实例")),
             "created_at": str(environment.get("created_at", self.now_func())),
             "updated_at": str(environment.get("updated_at", self.now_func())),
             "last_open_pid": environment.get("last_open_pid", "") if status == ENV_STATUS_RUNNING else "",
@@ -317,5 +317,92 @@ class ClientStateService:
                 "version": 1,
                 "updated_at": self.now_func(),
                 "tasks": list(tasks),
+            },
+        )
+
+    @staticmethod
+    def default_task_defaults() -> dict:
+        return {
+            "task_mode": TASK_MODE_RECOMMEND,
+            "tag_class": "",
+            "followers_max": 0,
+            "following_max": 0,
+            "registration_year_min": 2023,
+            "registration_regions_text": "SG,MY",
+            "min_posts": 0,
+            "comment_max_days_ago": 0,
+            "render_wait_seconds": 30,
+            "watch_seconds_min": 4,
+            "watch_seconds_max": 10,
+        }
+
+    @staticmethod
+    def normalize_task_defaults(payload) -> dict:
+        defaults = ClientStateService.default_task_defaults()
+        if not isinstance(payload, dict):
+            return defaults
+        raw = payload.get("task_defaults", payload)
+        if not isinstance(raw, dict):
+            return defaults
+
+        normalized = dict(defaults)
+        normalized["task_mode"] = str(raw.get("task_mode", defaults["task_mode"]))
+        normalized["tag_class"] = str(raw.get("tag_class", defaults["tag_class"]))
+        normalized["registration_regions_text"] = str(
+            raw.get("registration_regions_text", defaults["registration_regions_text"])
+        )
+
+        int_fields = [
+            "followers_max",
+            "following_max",
+            "registration_year_min",
+            "min_posts",
+            "comment_max_days_ago",
+            "render_wait_seconds",
+            "watch_seconds_min",
+            "watch_seconds_max",
+        ]
+        for field in int_fields:
+            try:
+                normalized[field] = int(raw.get(field, defaults[field]))
+            except (TypeError, ValueError):
+                normalized[field] = defaults[field]
+
+        # Older client builds stored these two fields as *_min, but the product
+        # meaning is "do not exceed this count". Migrate the saved value to max.
+        if normalized["followers_max"] <= 0:
+            try:
+                normalized["followers_max"] = int(raw.get("followers_min", 0))
+            except (TypeError, ValueError):
+                normalized["followers_max"] = 0
+        if normalized["following_max"] <= 0:
+            try:
+                normalized["following_max"] = int(raw.get("following_min", 0))
+            except (TypeError, ValueError):
+                normalized["following_max"] = 0
+
+        normalized["followers_max"] = max(0, normalized["followers_max"])
+        normalized["following_max"] = max(0, normalized["following_max"])
+        normalized["registration_year_min"] = max(2000, normalized["registration_year_min"])
+        normalized["min_posts"] = max(0, normalized["min_posts"])
+        normalized["comment_max_days_ago"] = max(0, normalized["comment_max_days_ago"])
+        normalized["render_wait_seconds"] = max(5, normalized["render_wait_seconds"])
+        normalized["watch_seconds_min"] = max(2, normalized["watch_seconds_min"])
+        normalized["watch_seconds_max"] = max(
+            normalized["watch_seconds_min"],
+            normalized["watch_seconds_max"],
+        )
+        return normalized
+
+    def load_task_defaults(self) -> dict:
+        return self.normalize_task_defaults(read_json_file(self.task_defaults_file, {}))
+
+    def save_task_defaults(self, defaults: dict) -> None:
+        write_json_file(
+            self.task_defaults_file,
+            {
+                "version": 1,
+                "updated_at": self.now_func(),
+                "task_defaults": self.normalize_task_defaults(defaults),
             },
         )

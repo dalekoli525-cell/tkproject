@@ -1,7 +1,7 @@
 """Offline API auth validation.
 
 The script uses FastAPI's in-process TestClient, so it does not require a
-running server, database, Redis, Clash, or browser.
+running server, database, Redis, proxy service, or browser.
 """
 
 from __future__ import annotations

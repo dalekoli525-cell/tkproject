@@ -61,14 +61,14 @@ def get_task(task_code: str, user: dict = Depends(require_current_user)):
     for task in list_tasks(user):
         if isinstance(task, dict) and task.get("task_code") == task_code:
             return task
-    raise HTTPException(status_code=404, detail="task not found")
+    raise HTTPException(status_code=404, detail="未找到任务。")
 
 
 @router.post("")
 def create_task(task: dict, user: dict = Depends(require_current_user)):
     task_code = str(task.get("task_code", "")).strip()
     if not task_code:
-        raise HTTPException(status_code=400, detail="task_code is required")
+        raise HTTPException(status_code=400, detail="任务编号不能为空。")
 
     task["owner_username"] = str(user.get("username", ""))
     payload = _load_payload()

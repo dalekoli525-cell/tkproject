@@ -35,6 +35,8 @@ class AppSettings:
         "mysql+pymysql://tk_user:tk_password@127.0.0.1:3306/tk_ai_crm",
     )
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    redis_cluster_nodes: str = os.getenv("REDIS_CLUSTER_NODES", "")
+    redis_password: str = os.getenv("REDIS_PASSWORD", "")
     ai_base_url: str = os.getenv("AI_BASE_URL", "http://127.0.0.1:11434")
     ai_model: str = os.getenv("AI_MODEL", "minimax-m3:cloud")
     client_api_base_url: str = os.getenv("CLIENT_API_BASE_URL", "http://127.0.0.1:8000")
@@ -42,14 +44,6 @@ class AppSettings:
     profile_root: Path = Path(
         os.getenv("BROWSER_PROFILE_ROOT", str(ROOT_DIR / "runtime" / "profiles"))
     )
-    clash_config_dir: Path = Path(
-        os.getenv(
-            "CLASH_CONFIG_DIR",
-            str(Path.home() / "AppData" / "Roaming" / "io.github.clash-verge-rev.clash-verge-rev"),
-        )
-    )
-    clash_api_base_url: str = os.getenv("CLASH_API_BASE_URL", "http://127.0.0.1:9097")
-    clash_api_secret: str = os.getenv("CLASH_API_SECRET", "set-your-secret")
     proxy_port_start: int = _int_env("PROXY_PORT_START", DEFAULT_PROXY_PORT_START)
     tiktok_render_wait_seconds: int = max(
         MIN_RENDER_WAIT_SECONDS,

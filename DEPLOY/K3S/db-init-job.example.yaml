@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tk-ai-crm-init-db
+  namespace: tk-ai-crm
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: tk-ai-crm-init-db
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: init-db
+          image: registry.example.local/tk-ai-crm-api:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - SCRIPTS/Init_Database.py
+          envFrom:
+            - configMapRef:
+                name: tk-ai-crm-config
+            - secretRef:
+                name: tk-ai-crm-secrets

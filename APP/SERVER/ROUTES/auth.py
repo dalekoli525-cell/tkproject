@@ -44,15 +44,15 @@ def register(payload: RegisterRequest):
             invite = row
             break
     if not invite:
-        raise HTTPException(status_code=400, detail="invalid invite code")
+        raise HTTPException(status_code=400, detail="邀请码无效。")
 
     uses_remaining = int(invite.get("uses_remaining", 0))
     if uses_remaining <= 0:
-        raise HTTPException(status_code=400, detail="invite code has no remaining uses")
+        raise HTTPException(status_code=400, detail="邀请码可用次数已用完。")
 
     user_payload = load_users()
     if any(row.get("username") == payload.username for row in user_payload["users"]):
-        raise HTTPException(status_code=409, detail="username already exists")
+        raise HTTPException(status_code=409, detail="账号已存在。")
 
     password = hash_password(payload.password)
     user = {
@@ -80,14 +80,14 @@ def login(payload: LoginRequest):
             user = row
             break
     if not user or not user.get("is_active", True):
-        raise HTTPException(status_code=401, detail="invalid username or password")
+        raise HTTPException(status_code=401, detail="账号或密码错误。")
 
     if not verify_password(
         payload.password,
         str(user.get("password_salt", "")),
         str(user.get("password_hash", "")),
     ):
-        raise HTTPException(status_code=401, detail="invalid username or password")
+        raise HTTPException(status_code=401, detail="账号或密码错误。")
 
     user["last_login_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     save_users(user_payload)

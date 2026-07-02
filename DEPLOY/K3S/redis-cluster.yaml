@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tk-ai-crm-redis-headless
+  namespace: tk-ai-crm
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: tk-ai-crm-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: cluster-bus
+      port: 16379
+      targetPort: 16379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tk-ai-crm-redis
+  namespace: tk-ai-crm
+spec:
+  selector:
+    app: tk-ai-crm-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: cluster-bus
+      port: 16379
+      targetPort: 16379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tk-ai-crm-redis
+  namespace: tk-ai-crm
+spec:
+  serviceName: tk-ai-crm-redis-headless
+  replicas: 6
+  selector:
+    matchLabels:
+      app: tk-ai-crm-redis
+  template:
+    metadata:
+      labels:
+        app: tk-ai-crm-redis
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: redis:5.0.14-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+              name: redis
+            - containerPort: 16379
+              name: cluster-bus
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tk-ai-crm-secrets
+                  key: REDIS_PASSWORD
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              cat > /tmp/redis.conf <<EOF
+              port 6379
+              bind 0.0.0.0
+              protected-mode no
+              appendonly yes
+              dir /data
+              cluster-enabled yes
+              cluster-config-file nodes.conf
+              cluster-node-timeout 5000
+              cluster-announce-ip ${POD_IP}
+              cluster-announce-port 6379
+              cluster-announce-bus-port 16379
+              requirepass ${REDIS_PASSWORD}
+              masterauth ${REDIS_PASSWORD}
+              EOF
+              exec redis-server /tmp/redis.conf
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - redis-cli -a "$REDIS_PASSWORD" ping | grep -q PONG
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - redis-cli -a "$REDIS_PASSWORD" ping | grep -q PONG
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tk-ai-crm-redis-cluster-init
+  namespace: tk-ai-crm
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: tk-ai-crm-redis-cluster-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: redis-cluster-init
+          image: redis:5.0.14-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tk-ai-crm-secrets
+                  key: REDIS_PASSWORD
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              nodes=""
+              for index in 0 1 2 3 4 5; do
+                host="tk-ai-crm-redis-${index}.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local"
+                until redis-cli -a "$REDIS_PASSWORD" -h "$host" -p 6379 ping | grep -q PONG; do
+                  echo "waiting for ${host}"
+                  sleep 3
+                done
+                nodes="${nodes} ${host}:6379"
+              done
+
+              first_node="tk-ai-crm-redis-0.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local"
+              if redis-cli -a "$REDIS_PASSWORD" -h "$first_node" -p 6379 cluster info | grep -q "cluster_state:ok"; then
+                echo "redis cluster already initialized"
+                exit 0
+              fi
+
+              echo "creating redis cluster:${nodes}"
+              redis-cli -a "$REDIS_PASSWORD" --cluster create $nodes --cluster-replicas 1 --cluster-yes

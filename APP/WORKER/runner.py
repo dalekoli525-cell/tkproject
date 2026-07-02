@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """Worker entrypoint.
 
 The first production-safe step is an observable local worker loop. It reads the
@@ -52,7 +54,7 @@ def _read_tasks(path: Path) -> list[dict]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("cannot read task state {}: {}", path, exc)
+        logger.warning("无法读取任务状态文件 {}：{}", path, exc)
         return []
 
     if isinstance(payload, list):
@@ -86,7 +88,7 @@ class LocalTaskObserver:
             failed=_count(statuses, {"FAILED", "ERROR"}),
         )
         logger.info(
-            "task snapshot: total={} pending={} running={} finished={} failed={}",
+            "任务快照：总数={} 待处理={} 运行中={} 已完成={} 失败={}",
             snapshot.total,
             snapshot.pending,
             snapshot.running,
@@ -97,18 +99,18 @@ class LocalTaskObserver:
 
 
 def _handle_stop(signum, _frame) -> None:
-    logger.info("worker received stop signal {}", signum)
+    logger.info("Worker 收到停止信号 {}", signum)
     STOP_EVENT.set()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TK AI CRM worker")
-    parser.add_argument("--once", action="store_true", help="poll once and exit")
+    parser = argparse.ArgumentParser(description="TK AI CRM Worker")
+    parser.add_argument("--once", action="store_true", help="只轮询一次后退出")
     parser.add_argument(
         "--poll-seconds",
         type=int,
         default=30,
-        help="local task polling interval",
+        help="本地任务轮询间隔秒数",
     )
     return parser.parse_args()
 
@@ -121,7 +123,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_stop)
 
     logger.info(
-        "worker booted; concurrency={} mode=local-observer task_file={}",
+        "Worker 已启动；并发数={} 模式=本地观察器 任务文件={}",
         settings.worker_concurrency,
         TASK_STATE_FILE,
     )
@@ -133,7 +135,7 @@ def main() -> int:
             break
         STOP_EVENT.wait(interval)
 
-    logger.info("worker stopped")
+    logger.info("Worker 已停止")
     return 0
 
 

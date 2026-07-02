@@ -52,7 +52,7 @@ def list_proxy_nodes():
 def upsert_proxy_node(payload: dict):
     node = str(payload.get("name", "")).strip()
     if not node:
-        raise HTTPException(status_code=400, detail="name is required")
+        raise HTTPException(status_code=400, detail="名称不能为空。")
 
     current = read_json(PROXY_NODE_STATE_FILE, {"version": 1, "nodes": []})
     nodes = current.get("nodes", [])
@@ -73,7 +73,7 @@ def list_tag_classes():
 def upsert_tag_class(payload: dict):
     name = str(payload.get("name", "")).strip()
     if not name:
-        raise HTTPException(status_code=400, detail="name is required")
+        raise HTTPException(status_code=400, detail="名称不能为空。")
 
     tag_class = {
         "name": name,
@@ -102,7 +102,7 @@ def delete_tag_class(name: str):
         if isinstance(row, dict) and row.get("name") != name
     ]
     if len(rows) == len(current.get("tag_classes", [])):
-        raise HTTPException(status_code=404, detail="tag class not found")
+        raise HTTPException(status_code=404, detail="未找到标签分类。")
     current["tag_classes"] = rows
     write_json(TAG_CLASS_STATE_FILE, current)
     return {"deleted": name}

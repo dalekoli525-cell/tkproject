@@ -8,7 +8,12 @@ data:
   APP_ENV: "production"
   SERVER_HOST: "0.0.0.0"
   SERVER_PORT: "8000"
+  CLIENT_API_BASE_URL: "https://tk-ai-crm.example.com"
   WORKER_CONCURRENCY: "2"
   TIKTOK_RENDER_WAIT_SECONDS: "30"
   PROXY_PORT_START: "7901"
-
+  BROWSER_PROFILE_ROOT: "/app/runtime/profiles"
+  REDIS_CLUSTER_NODES: "tk-ai-crm-redis-0.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379,tk-ai-crm-redis-1.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379,tk-ai-crm-redis-2.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379,tk-ai-crm-redis-3.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379,tk-ai-crm-redis-4.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379,tk-ai-crm-redis-5.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379"
+  TK_AI_CRM_VIDEO_COORDINATOR: "redis"
+  TK_AI_CRM_VIDEO_LOCK_TTL_SECONDS: "14400"
+  TK_AI_CRM_VIDEO_DONE_TTL_SECONDS: "2592000"

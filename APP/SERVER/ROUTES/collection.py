@@ -94,12 +94,26 @@ def _read_collection_rows(
 
 @router.get("/users")
 def list_collected_users(
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=100000),
     tiktok_id: str = "",
     user: dict = Depends(require_current_user),
 ):
     return _read_collection_rows(
         "collected_users.jsonl",
+        limit=limit,
+        user=user,
+        tiktok_id=tiktok_id,
+    )
+
+
+@router.get("/comment-candidates")
+def list_comment_candidates(
+    limit: int = Query(default=100, ge=1, le=100000),
+    tiktok_id: str = "",
+    user: dict = Depends(require_current_user),
+):
+    return _read_collection_rows(
+        "comment_candidates.jsonl",
         limit=limit,
         user=user,
         tiktok_id=tiktok_id,

@@ -22,6 +22,9 @@ spec:
                 name: tk-ai-crm-config
             - secretRef:
                 name: tk-ai-crm-secrets
+          volumeMounts:
+            - name: runtime
+              mountPath: /app/runtime
           resources:
             requests:
               cpu: "1"
@@ -29,4 +32,7 @@ spec:
             limits:
               cpu: "2"
               memory: "3Gi"
-
+      volumes:
+        - name: runtime
+          persistentVolumeClaim:
+            claimName: tk-ai-crm-runtime

@@ -23,8 +23,8 @@ For 3-5 concurrent Playwright environments:
   - 8 vCPU
   - 16 GB RAM
   - 200 GB SSD
-- MySQL/PostgreSQL on the same LAN or a dedicated VM
-- Redis on the same LAN or a dedicated VM
+- MySQL 5.0 on the same LAN or a dedicated database VM, not in containers
+- Redis Cluster inside k3s, six pods with persistent volumes
 - AI service on a GPU machine or a separate CPU inference VM
 
 ## Production Scale Target
@@ -43,17 +43,22 @@ For 10-20 concurrent browser environments:
   - 4-8 vCPU
   - 16-32 GB RAM
   - SSD with daily backups
-- dedicated Redis server
-  - 2-4 vCPU
-  - 4-8 GB RAM
+- Redis Cluster inside k3s
+  - 6 pods minimum
+  - 100m-500m CPU per pod for early production
+  - 128-512 MB RAM per pod for early production
+  - persistent volume per pod
 - dedicated AI server
   - CPU mode: 8+ vCPU, 32 GB RAM
   - GPU mode: NVIDIA GPU with 12 GB+ VRAM
 
 ## Network Requirements
 
-- Workers need outbound access to TikTok through Clash/mihomo.
+- Workers need outbound access to TikTok through the configured direct proxy
+  servers or through the host network when `DIRECT` is selected.
 - API needs LAN access to database, Redis, and AI service.
+- MySQL 5.0 must run outside k3s on a database VM or physical server.
+- Redis is exposed only inside the k3s namespace through the Redis Cluster services.
 - Client needs access to API ingress.
 - Keep database and Redis private; do not expose them directly to the internet.
 
@@ -66,4 +71,3 @@ Playwright workers are memory-heavy. Plan roughly:
 - 10 browser environments: 14 GB - 24 GB RAM
 
 Start with low concurrency, measure memory, then raise `WORKER_CONCURRENCY`.
-

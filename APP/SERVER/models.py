@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """SQLAlchemy models for the rewritten product baseline."""
 
 from datetime import datetime
@@ -31,7 +33,7 @@ class ProxyNode(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
-    provider: Mapped[str] = mapped_column(String(100), default="clash-verge")
+    provider: Mapped[str] = mapped_column(String(100), default="direct-proxy")
     region: Mapped[str] = mapped_column(String(50), default="")
     remark: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -40,12 +42,16 @@ class ProxyNode(Base):
 
 class BrowserEnvironment(Base):
     __tablename__ = "browser_environments"
+    __table_args__ = (
+        UniqueConstraint("owner_username", "code", name="uq_browser_env_owner_code"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    code: Mapped[str] = mapped_column(String(50), index=True)
     name: Mapped[str] = mapped_column(String(120))
+    owner_username: Mapped[str] = mapped_column(String(100), default="", index=True)
     proxy_node_name: Mapped[str] = mapped_column(String(120), index=True)
-    local_proxy_port: Mapped[int] = mapped_column(Integer, unique=True)
+    local_proxy_port: Mapped[int] = mapped_column(Integer)
     profile_dir: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(50), default="NEW")
     created_by: Mapped[str] = mapped_column(String(100), default="")
@@ -59,13 +65,18 @@ class BrowserEnvironment(Base):
 
 class TikTokAccount(Base):
     __tablename__ = "tiktok_accounts"
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_tiktok_account_username"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     environment_code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    username: Mapped[str] = mapped_column(String(255), index=True)
+    username: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_ciphertext: Mapped[str] = mapped_column(String(1000), default="")
+    assigned_owner_username: Mapped[str] = mapped_column(String(100), default="", index=True)
     nickname: Mapped[str] = mapped_column(String(255), default="")
     login_status: Mapped[str] = mapped_column(String(50), default="UNKNOWN")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

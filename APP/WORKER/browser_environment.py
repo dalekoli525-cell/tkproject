@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """Playwright browser environment manager."""
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ class PlaywrightEnvironmentManager:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
             raise RuntimeError(
-                "Playwright is not installed. Run: python -m playwright install chromium"
+                "Playwright 未安装。请执行：python -m playwright install chromium"
             ) from exc
 
         Path(self.environment.profile_dir).mkdir(parents=True, exist_ok=True)

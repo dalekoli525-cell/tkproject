@@ -63,6 +63,8 @@ class TaskCommandService:
 
         command["status"] = "PAUSE_REQUESTED"
         command["pause_requested_at"] = self.now_func()
+        command["pause_mode"] = "finish_current_candidates"
+        command["close_environment_after_pause"] = True
         command["updated_at"] = self.now_func()
         write_json_file(self.command_path(environment_code), command)
         return True, "PAUSE_REQUESTED"

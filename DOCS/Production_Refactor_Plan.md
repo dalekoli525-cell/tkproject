@@ -38,13 +38,13 @@ flowchart LR
 3. Data query
    - GUI reads collected users from local JSONL.
    - FastAPI exposes users, videos, and task logs.
-   - Later replace JSONL with MySQL/PostgreSQL repositories.
+   - Later replace JSONL with MySQL 5.0 repositories.
 
 4. Production server deployment
    - FastAPI API service.
    - Worker service.
-   - Database service.
-   - Redis queue.
+   - External MySQL 5.0 database.
+   - Redis Cluster in k3s.
    - k3s deployment manifests.
 
 5. AI filtering

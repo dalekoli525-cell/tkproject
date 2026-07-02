@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """Pydantic schemas shared by the API and workers."""
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from APP.SHARED.constants import TASK_MODE_RECOMMEND
 
 class ProxyNode(BaseModel):
     name: str = Field(min_length=1)
-    provider: str = "clash-verge"
+    provider: str = "direct-proxy"
     remark: str = ""
 
 
@@ -29,15 +31,7 @@ class BrowserEnvironment(BaseModel):
     tiktok_password: str = ""
     status: str = "NEW"
     task_mode: str = TASK_MODE_RECOMMEND
-    tag_class: str = "A类"
-
-    @property
-    def proxy_group_name(self) -> str:
-        return f"ENV_{self.code}_PROXY".replace("-", "_").upper()
-
-    @property
-    def listener_name(self) -> str:
-        return f"env-{self.code}".lower()
+    tag_class: str = ""
 
 
 class BrowserEnvironmentPublic(BaseModel):
@@ -50,7 +44,7 @@ class BrowserEnvironmentPublic(BaseModel):
     tiktok_username: str = ""
     status: str = "NEW"
     task_mode: str = TASK_MODE_RECOMMEND
-    tag_class: str = "A类"
+    tag_class: str = ""
 
 
 class CollectTaskConfig(BaseModel):

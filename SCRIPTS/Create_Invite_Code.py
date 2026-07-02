@@ -18,7 +18,7 @@ from APP.SERVER.security import create_invite_code
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--code", required=True, help="six-digit invite code")
+    parser.add_argument("--code", required=True, help="6 位数字邀请码")
     parser.add_argument("--role", default="operator", choices=["admin", "operator"])
     parser.add_argument("--uses", default=1, type=int)
     parser.add_argument("--inactive", action="store_true")
@@ -34,9 +34,9 @@ def main() -> int:
         is_active=not args.inactive,
     )
     print(
-        "invite saved: "
+        "邀请码已保存："
         f"code={invite['code']} role={invite['role']} "
-        f"uses_remaining={invite['uses_remaining']} active={invite['is_active']}"
+        f"剩余次数={invite['uses_remaining']} 启用={invite['is_active']}"
     )
     return 0
 

@@ -13,6 +13,7 @@ from APP.SERVER.local_state import SERVER_STATE_DIR
 from APP.SERVER.local_state import now_iso
 from APP.SERVER.local_state import read_json
 from APP.SERVER.local_state import write_json
+from APP.SERVER.security import hash_password
 from APP.SERVER.security import public_user
 from APP.SERVER.security import require_admin
 from APP.SHARED.constants import TASK_MODE_HASHTAG
@@ -39,10 +40,17 @@ class InviteCodeUpsert(BaseModel):
     is_active: bool = True
 
 
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=6, max_length=200)
+    role: str = "operator"
+    is_active: bool = True
+
+
 class TaskTemplateUpsert(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     mode: str = TASK_MODE_RECOMMEND
-    tag_class: str = "A类"
+    tag_class: str = ""
     render_wait_seconds: int = Field(default=30, ge=5, le=300)
     max_videos: int = Field(default=0, ge=0, le=100000)
     max_comments_per_video: int = Field(default=0, ge=0, le=100000)
@@ -57,7 +65,7 @@ def _default_task_templates() -> list[dict]:
         {
             "name": "推荐流评论采集",
             "mode": TASK_MODE_RECOMMEND,
-            "tag_class": "A类",
+            "tag_class": "",
             "render_wait_seconds": 30,
             "max_videos": 0,
             "max_comments_per_video": 0,
@@ -70,7 +78,7 @@ def _default_task_templates() -> list[dict]:
         {
             "name": "标签视频评论采集",
             "mode": TASK_MODE_HASHTAG,
-            "tag_class": "A类",
+            "tag_class": "",
             "render_wait_seconds": 30,
             "max_videos": 0,
             "max_comments_per_video": 0,
@@ -102,6 +110,39 @@ def list_users():
     ]
 
 
+@router.post("/users")
+def create_user(payload: UserCreate):
+    username = payload.username.strip()
+    role = payload.role.strip().lower() or "operator"
+    if role not in {"admin", "operator"}:
+        raise HTTPException(status_code=400, detail="角色只能是 admin 或 operator。")
+
+    state = read_json(USERS_FILE, {"version": 1, "users": []})
+    rows = [
+        row
+        for row in state.get("users", [])
+        if isinstance(row, dict)
+    ]
+    if any(str(row.get("username", "")).lower() == username.lower() for row in rows):
+        raise HTTPException(status_code=409, detail="账号已存在。")
+
+    password = hash_password(payload.password)
+    user = {
+        "username": username,
+        "password_salt": password["salt"],
+        "password_hash": password["hash"],
+        "role": role,
+        "is_active": bool(payload.is_active),
+        "created_at": now_iso(),
+        "last_login_at": "",
+        "created_by_admin": True,
+    }
+    rows.append(user)
+    state["users"] = rows
+    write_json(USERS_FILE, state)
+    return public_user(user)
+
+
 @router.patch("/users/{username}")
 def update_user(username: str, payload: dict):
     state = read_json(USERS_FILE, {"version": 1, "users": []})
@@ -109,13 +150,20 @@ def update_user(username: str, payload: dict):
         if not isinstance(row, dict) or row.get("username") != username:
             continue
         if "role" in payload:
-            row["role"] = str(payload["role"]).strip() or row.get("role", "operator")
+            role = str(payload["role"]).strip().lower() or row.get("role", "operator")
+            if role not in {"admin", "operator"}:
+                raise HTTPException(status_code=400, detail="角色只能是 admin 或 operator。")
+            row["role"] = role
         if "is_active" in payload:
             row["is_active"] = bool(payload["is_active"])
+        if "password" in payload and str(payload["password"]).strip():
+            password = hash_password(str(payload["password"]))
+            row["password_salt"] = password["salt"]
+            row["password_hash"] = password["hash"]
         row["updated_at"] = now_iso()
         write_json(USERS_FILE, state)
         return public_user(row)
-    raise HTTPException(status_code=404, detail="user not found")
+    raise HTTPException(status_code=404, detail="未找到用户。")
 
 
 @router.get("/invite-codes")
@@ -157,7 +205,7 @@ def list_task_templates():
 @router.post("/task-templates")
 def upsert_task_template(payload: TaskTemplateUpsert):
     if payload.mode not in {TASK_MODE_RECOMMEND, TASK_MODE_HASHTAG}:
-        raise HTTPException(status_code=400, detail="invalid task mode")
+        raise HTTPException(status_code=400, detail="任务模式无效。")
 
     state = read_json(TASK_TEMPLATES_FILE, {"version": 1, "task_templates": []})
     rows = [

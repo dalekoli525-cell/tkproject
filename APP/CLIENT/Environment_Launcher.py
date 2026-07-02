@@ -17,6 +17,8 @@ class EnvironmentLaunchRequest:
     port: int
     proxy_node: str
     profile_dir: Path
+    browser_dir: Path
+    browser_executable: str
     render_wait_seconds: int
     env_state_file: Path
     env_lock_dir: Path
@@ -48,6 +50,21 @@ class EnvironmentLauncher:
     def _no_window_flag() -> int:
         return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+    @staticmethod
+    def _proxy_display_host(proxy_node: str) -> str:
+        node = str(proxy_node or "").strip()
+        if not node:
+            return "-"
+        if node.upper() == "DIRECT":
+            return "直连"
+        body = node
+        if "://" in body:
+            body = body.split("://", 1)[1]
+        body = body.split("/", 1)[0].strip()
+        if "@" in body:
+            body = body.rsplit("@", 1)[1]
+        return body.split(":", 1)[0].strip() or node
+
     def _ensure_script_exists(self) -> None:
         if not self.script_path.exists():
             raise EnvironmentLaunchError(f"找不到启动脚本：{self.script_path}")
@@ -63,7 +80,7 @@ class EnvironmentLauncher:
         if request.proxy_node.strip().upper() != "DIRECT" and proxy_server is None:
             raise EnvironmentLaunchError(
                 (
-                    f"环境 {request.code} 的代理节点 {request.proxy_node} 不可用。\n\n"
+                    f"环境 {request.code} 的代理节点 {self._proxy_display_host(request.proxy_node)} 不可用。\n\n"
                     f"{proxy_note}\n\n"
                     "请确认代理节点已按 Playwright 代理格式添加，或切换为 DIRECT 测试。"
                 )
@@ -85,6 +102,10 @@ class EnvironmentLauncher:
             request.proxy_node,
             "--profile-dir",
             str(request.profile_dir),
+            "--browser-dir",
+            str(request.browser_dir),
+            "--browser-executable",
+            str(request.browser_executable or ""),
             "--url",
             request.url,
             "--render-wait",

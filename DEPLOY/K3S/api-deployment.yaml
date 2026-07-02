@@ -5,6 +5,11 @@ metadata:
   namespace: tk-ai-crm
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: tk-ai-crm-api
@@ -24,6 +29,9 @@ spec:
                 name: tk-ai-crm-config
             - secretRef:
                 name: tk-ai-crm-secrets
+          volumeMounts:
+            - name: runtime
+              mountPath: /app/runtime
           readinessProbe:
             httpGet:
               path: /ready
@@ -43,4 +51,7 @@ spec:
             limits:
               cpu: "1"
               memory: "1Gi"
-
+      volumes:
+        - name: runtime
+          persistentVolumeClaim:
+            claimName: tk-ai-crm-runtime

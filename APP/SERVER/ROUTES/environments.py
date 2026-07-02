@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """Temporary environment API backed by the local client state JSON file."""
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ def _to_schema(environment: dict) -> BrowserEnvironment:
         tiktok_password=str(environment.get("tiktok_password", "")),
         status=str(environment.get("status", "NEW")),
         task_mode=str(environment.get("task_mode", "recommend")),
-        tag_class=str(environment.get("tag_class", "A")),
+        tag_class=str(environment.get("tag_class", "")),
     )
 
 
@@ -109,6 +111,34 @@ def _environment_visible_to(environment: dict, user: dict) -> bool:
     return str(environment.get("owner_username", "")) == str(user.get("username", ""))
 
 
+def _normalize_account(value: str) -> str:
+    account = str(value or "").strip()
+    if not account or account == "-":
+        return ""
+    return account.lower()
+
+
+def _account_conflicts_with_existing(payload: dict, row: dict) -> dict | None:
+    account = _normalize_account(row.get("account", ""))
+    if not account:
+        return None
+
+    owner_username = str(row.get("owner_username", ""))
+    environment_code = str(row.get("code", "")).zfill(3)
+    for item in payload.get("environments", []):
+        if not isinstance(item, dict):
+            continue
+        existing_account = _normalize_account(item.get("account", ""))
+        if existing_account != account:
+            continue
+        same_owner = str(item.get("owner_username", "")) == owner_username
+        same_code = str(item.get("code", "")).zfill(3) == environment_code
+        if same_owner and same_code:
+            continue
+        return item
+    return None
+
+
 def _collect_candidates(payload: dict, normalized_code: str, user: dict) -> list[tuple[int, dict]]:
     return [
         (index, item)
@@ -124,6 +154,15 @@ def create_environment(environment: BrowserEnvironment, user: dict = Depends(req
     payload = _load_payload()
     owner_username = str(user.get("username", ""))
     row = _from_schema(environment, owner_username=owner_username)
+    conflict = _account_conflicts_with_existing(payload, row)
+    if conflict:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "该 TikTok 账号已分配给用户："
+                f"{conflict.get('owner_username', '其他用户')}"
+            ),
+        )
     rows = [
         item
         for item in payload.get("environments", [])
@@ -167,18 +206,18 @@ def get_environment(
         if not candidates:
             raise HTTPException(
                 status_code=404,
-                detail=f"environment {normalized_code} not found for owner {owner_username}",
+                detail=f"未找到用户 {owner_username} 的环境 {normalized_code}。",
             )
         return _to_public_schema(candidates[0][1])
 
     if not candidates:
-        raise HTTPException(status_code=404, detail="environment not found")
+        raise HTTPException(status_code=404, detail="未找到环境。")
     if _is_admin(user) and len(candidates) > 1:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"multiple environments match code {normalized_code};"
-                " pass owner_username to identify target"
+                f"环境编号 {normalized_code} 匹配到多个用户；"
+                "请传入 owner_username 指定目标。"
             ),
         )
     return _to_public_schema(candidates[0][1])
@@ -206,20 +245,20 @@ def delete_environment(
             if _is_admin(user):
                 raise HTTPException(
                     status_code=404,
-                    detail=f"environment {normalized_code} not found for owner {owner_username}",
+                    detail=f"未找到用户 {owner_username} 的环境 {normalized_code}。",
                 )
-            raise HTTPException(status_code=404, detail="environment not found")
+            raise HTTPException(status_code=404, detail="未找到环境。")
     elif _is_admin(user) and len(candidates) > 1:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"multiple environments match code {normalized_code};"
-                " pass owner_username to identify target"
+                f"环境编号 {normalized_code} 匹配到多个用户；"
+                "请传入 owner_username 指定目标。"
             ),
         )
 
     if not candidates:
-        raise HTTPException(status_code=404, detail="environment not found")
+        raise HTTPException(status_code=404, detail="未找到环境。")
 
     remove_indexes = {index for index, _ in candidates}
     payload["environments"] = [
