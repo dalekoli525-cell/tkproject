@@ -1,48 +1,45 @@
-# Deployment
+﻿# TK AI CRM 部署入口
 
-This project is designed for k3s:
+本目录只保留部署清单和快速入口。完整部署步骤统一查看：
 
-- API pods expose task/account/environment endpoints.
-- Worker pods run Playwright collection jobs.
-- MySQL 5.0 is deployed separately on a non-container database host and is
-  configured by `DATABASE_URL`.
-- Redis runs as a six-pod Redis Cluster inside k3s.
-- AI services are configured by URL.
-- Browser profiles should use persistent volumes when worker state must survive
-  restarts.
+```text
+DOCS/DEPLOYMENT.md
+```
 
-First deployment command:
+## 当前部署结构
 
-```powershell
-kubectl apply -f DEPLOY/K3S/namespace.yaml
-kubectl -n tk-ai-crm create secret generic tk-ai-crm-secrets `
-  --from-literal=DATABASE_URL="mysql+pymysql://tk_user:change-me@mysql5.example.local:3306/tk_ai_crm?charset=utf8" `
-  --from-literal=REDIS_PASSWORD="change-me" `
-  --from-literal=REDIS_URL="redis://:change-me@tk-ai-crm-redis-0.tk-ai-crm-redis-headless.tk-ai-crm.svc.cluster.local:6379/0" `
-  --from-literal=AI_BASE_URL="http://ollama.example.local:11434" `
-  --from-literal=AI_MODEL="minimax-m3:cloud"
+- API：`DEPLOY/K3S/api-deployment.yaml`
+- Worker：`DEPLOY/K3S/worker-deployment.yaml`
+- Redis Cluster：`DEPLOY/K3S/redis-cluster.yaml`
+- Runtime PVC：`DEPLOY/K3S/runtime-pvc.yaml`
+- ConfigMap：`DEPLOY/K3S/configmap.yaml`
+- Secret 示例：`DEPLOY/K3S/secret.example.yaml`
+- Ingress：`DEPLOY/K3S/ingress.yaml`
+- 数据库初始化 Job 示例：`DEPLOY/K3S/db-init-job.example.yaml`
+
+## 快速部署顺序
+
+1. 准备外部 MySQL 5.0。
+2. 构建并推送 API / Worker 镜像。
+3. 修改 `DEPLOY/K3S/configmap.yaml` 和 `DEPLOY/K3S/ingress.yaml`。
+4. 使用 `kubectl create secret generic` 创建真实 Secret。
+5. 执行：
+
+```bash
 kubectl apply -k DEPLOY/K3S
 ```
 
-`DEPLOY/K3S/secret.example.yaml` is only a template. It is intentionally not
-included by `kustomization.yaml` for production safety.
+6. 第一次部署时执行数据库初始化 Job：
 
-Redis Cluster is initialized by `DEPLOY/K3S/redis-cluster.yaml`. If you change
-`REDIS_PASSWORD` after the cluster has been created, recreate the Redis
-StatefulSet PVCs and rerun `tk-ai-crm-redis-cluster-init`; do not rotate it on a
-live cluster without a planned migration.
-
-Full Chinese production notes:
-
-```text
-DOCS/PRODUCTION_K3S_DEPLOYMENT.md
-DOCS/API_CONFIGURATION.md
-```
-
-Optional first database initialization:
-
-```powershell
+```bash
 kubectl apply -f DEPLOY/K3S/db-init-job.example.yaml
 kubectl -n tk-ai-crm logs job/tk-ai-crm-init-db
 kubectl -n tk-ai-crm delete job tk-ai-crm-init-db
 ```
+
+## 注意
+
+- 不要把真实密码写入 `secret.example.yaml` 后提交。
+- MySQL 不部署到 K3s，必须作为外部数据库服务。
+- Redis Cluster 部署在 K3s 内部，不对公网开放。
+- 生产部署必须启用 `TK_AI_CRM_VIDEO_COORDINATOR=redis`。
